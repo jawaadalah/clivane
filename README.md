@@ -16,8 +16,8 @@
   <img src="https://img.shields.io/badge/LLM-not%20required-brightgreen" alt="no LLM">
   <img src="https://img.shields.io/badge/API%20key-none-brightgreen" alt="no API key">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0">
-  <img src="https://img.shields.io/badge/version-1.1.0-orange" alt="v1.1.0">
-  <img src="https://img.shields.io/badge/selftest-10%2F10%20passing-brightgreen" alt="selftest">
+  <img src="https://img.shields.io/badge/version-1.2.0-orange" alt="v1.2.0">
+  <img src="https://img.shields.io/badge/selftest-12%2F12%20passing-brightgreen" alt="selftest">
 </p>
 
 ---
@@ -41,7 +41,7 @@ byte-identical package, in about a second, for free:
 | **forge** | a Python module | a full CLI: one subcommand per public function |
 | **mirror** | an existing CLI tool | a wrapper that adds a structured JSON envelope |
 | **openapi** | an OpenAPI 3 JSON spec | one subcommand per `operationId` |
-| **game** *(new in v1.1.0)* | a game module obeying the game contract | a session episode CLI with replay verification |
+| **game** *(new in v1.1.0)* | a game module obeying the game contract | a session episode CLI with replay verification — or, with `--fullstack` *(v1.2.0)*, a complete arena: session server + web UI + remote client + verified leaderboard |
 | **serve / probe** *(new in v1.1.0)* | a Python module / a live server | an HTTP JSON server + remote client / an endpoint map + generic client |
 
 …and one proof system for all five: **Trace-Seal**, golden traces that
@@ -55,7 +55,7 @@ No installation, no dependencies — just Python 3.10+:
 ```bash
 git clone https://github.com/jawaadalah/clivane
 cd clivane
-python3 clivane.py selftest        # 10/10 checks, runs in seconds
+python3 clivane.py selftest        # 12/12 checks, runs in seconds
 ```
 
 ### Path 1 — forge a Python module
@@ -98,6 +98,22 @@ python3 gemgrid_game_cli.py new --seed 7 --json
 python3 gemgrid_game_cli.py act down --json     # {observe, reward, done, info}
 python3 gemgrid_game_cli.py replay --seed 7 --actions down,down,down,right,up,right,right,right --json
 # -> "verified": true — the replayed episode ends in the identical state
+```
+
+#### …or the full arena (v1.2.0)
+
+```bash
+python3 clivane.py game examples/gemgrid_game.py --fullstack --out examples/gemgrid-arena
+cd examples/gemgrid-arena
+python3 game_server.py                          # 127.0.0.1:8800 — API + web UI + leaderboard
+# humans: open http://127.0.0.1:8800/ and play, or watch any session live
+# agents: the generated remote client drives the same sessions over HTTP
+CLIVANE_REMOTE=http://127.0.0.1:8800 \
+  python3 gemgrid_game_arena_client.py new --seed 7 --player agent --json
+CLIVANE_REMOTE=http://127.0.0.1:8800 \
+  python3 gemgrid_game_arena_client.py finish --session s1 --json
+# -> the server replays the episode from its seed; only a reproduced
+#    score reaches the persistent leaderboard — claims are never trusted
 ```
 
 ### Path 5 — serve a module over HTTP, probe a live server
@@ -170,6 +186,17 @@ identical — an altered action fails loudly. Seed determinism is what
 lets a whole winning episode become a golden trace: the bundled
 GemGrid package is Gold because its 8-move win replays bit-for-bit.
 
+With `--fullstack`, the same contract grows into a complete **arena**:
+a stdlib HTTP server hosting many isolated sessions in parallel, a
+dependency-free web UI (play manually, or watch an agent's session
+live, board and leaderboard on one navy page), and a remote client CLI
+so agents play over HTTP with the same verbs. Scores are
+anti-fake by construction: there is no submit-a-score endpoint —
+`finish` makes the *server* replay the episode from its seed, and
+only a reproduced score is written to the persistent leaderboard
+(`scores.json`). The bundled `gemgrid-arena` package is Gold: its
+Trace-Seal replays the full client↔server episode, finish included.
+
 ### serve & probe — software over HTTP, both directions
 
 `serve` wraps a module in a stdlib HTTP server: `GET /health`,
@@ -210,7 +237,7 @@ The registry turns that evidence into an explicit quality tier:
 
 Tiers are **recomputed live** by `clivane registry` — the tier string in
 a manifest is never trusted. See `examples/INDEX.md` for a live table:
-all five bundled examples are Gold.
+all six bundled examples are Gold.
 
 ## Included examples
 
@@ -220,6 +247,7 @@ all five bundled examples are Gold.
 | `mirror-ls` | mirror | the system `ls` tool | (single-command tool) | Gold |
 | `todoline-cli` | openapi | `examples/todoline.openapi.json` | list-todos, create-todo, get-todo, delete-todo | Gold |
 | `gemgrid-game-cli` | game | `examples/gemgrid_game.py` ("GemGrid") | new, observe, actions, act, status, replay | Gold |
+| `gemgrid-game-arena` | game-fullstack | `examples/gemgrid_game.py` ("GemGrid") | arena server + web UI + remote client: new, observe, actions, act, finish, leaderboard | Gold |
 | `sample-app-server` | serve | `examples/sample_app.py` ("notebox") | the 5 notebox commands, over HTTP | Gold |
 
 `notebox` keeps its state in a JSON file and is deliberately
@@ -240,7 +268,7 @@ by CLI-Anything):
 | Reproducibility | **byte-identical output** | varies per run |
 | Backend required | only what the target itself needs | the real app must be installed |
 | GUI desktop apps | via mirror (if they ship any CLI) or forge (Python cores) | **strongest case — deep GUI mapping** |
-| Games / episodic environments | **game contract -> episode CLI + replay** | not addressed |
+| Games / episodic environments | **game contract -> episode CLI + replay; `--fullstack` arena with web UI + verified leaderboard** | not addressed |
 | Remote / HTTP access | **serve (server+client) and probe (introspect live servers)** | local processes only |
 | Proof of behaviour | **Trace-Seal golden traces + tiers** | test suites written per project |
 | Package size | 1 generated file + SKILL.md | full package tree per app |
@@ -254,7 +282,7 @@ Python modules, existing CLIs, and HTTP APIs **today**, with proof.
 ```
 clivane/
 ├── clivane.py          # the whole tool (stdlib only)
-├── selftest.py         # 10-check self-test suite
+├── selftest.py         # 12-check self-test suite
 ├── SOP.md              # the methodology — source of truth
 ├── examples/
 │   ├── sample_app.py           # "notebox", the forge + serve demo target
@@ -264,6 +292,7 @@ clivane/
 │   ├── mirror-ls/              # mirrored package (Gold)
 │   ├── gemgrid_game.py         # "GemGrid", the game demo target
 │   ├── gemgrid-cli/            # game package (Gold, episode sealed)
+│   ├── gemgrid-arena/          # fullstack arena: server + web UI + client (Gold)
 │   ├── notebox-server/         # server + client package (Gold)
 │   ├── registry.json           # machine-readable registry
 │   └── INDEX.md                # human-readable tier table
@@ -277,6 +306,8 @@ clivane forge   <module.py> --out <dir>    # AST -> agent CLI
 clivane mirror  <tool>      --out <dir>    # existing CLI -> JSON wrapper
 clivane openapi <spec.json> --out <dir>    # OpenAPI -> per-operation CLI
 clivane game    <game.py>   --out <dir>    # game contract -> episode CLI
+clivane game    <game.py>   --out <dir> --fullstack
+                                           # game contract -> arena (server + web UI + client)
 clivane serve   <module.py> --out <dir>    # module -> HTTP server + client
 clivane probe   <base_url>  --out <dir>    # live server -> map + client
 clivane verify  <dir> [--record]           # Trace-Seal record / replay
@@ -298,7 +329,9 @@ agent, **tanpa LLM dan tanpa API key**. Lima jalur deterministik:
 **forge** (modul Python dianalisis statis via AST menjadi CLI lengkap),
 **mirror** (CLI yang sudah ada dibungkus envelope JSON terstruktur),
 **openapi** (spesifikasi OpenAPI 3 menjadi CLI per operasi), **game**
-(modul game berkontrak menjadi CLI episode dengan replay terverifikasi),
+(modul game berkontrak menjadi CLI episode dengan replay terverifikasi —
+atau mode `--fullstack`: arena lengkap berisi server sesi, UI web, client
+remote, dan papan skor yang hanya menerima skor hasil replay server),
 dan **server** dua arah — **serve** (modul menjadi server HTTP + client
 jarak jauh) serta **probe** (introspeksi server yang sedang jalan
 menjadi peta endpoint + client). Setiap paket hasil dibuktikan dengan

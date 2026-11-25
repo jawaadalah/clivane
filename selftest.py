@@ -6,7 +6,10 @@ parsing fixture + envelope), openapi (operationId -> commands, --help),
 verify (seal PASS + tampered trace FAIL), registry tiers, determinism,
 game (contract valid/invalid, deterministic episodes, replay tamper),
 serve (live server: health/commands/run, remote client, token, probe),
-and the committed examples registry (5 packages, all Gold).
+game fullstack (arena: UI 200, parallel session isolation, illegal act
+400, finish replay-verification, persistent verified leaderboard,
+remote client, token), and the committed examples registry
+(6 packages, all Gold).
 """
 
 import hashlib
@@ -350,12 +353,12 @@ def _wait_health(url, proc, seconds=10):
     raise AssertionError("server at %s never became healthy" % url)
 
 
-def _start_server(pkg_dir, port, extra_env=None):
+def _start_server(pkg_dir, port, extra_env=None, server_file="server.py"):
     env = dict(os.environ)
     env["CLIVANE_PORT"] = str(port)
     if extra_env:
         env.update(extra_env)
-    proc = subprocess.Popen([sys.executable, "server.py"], cwd=pkg_dir, env=env,
+    proc = subprocess.Popen([sys.executable, server_file], cwd=pkg_dir, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _wait_health("http://127.0.0.1:%d" % port, proc)
     return proc
@@ -433,15 +436,160 @@ def t_serve_live(tmp):
         proc.wait(timeout=5)
 
 
+def t_game_fullstack_generate(tmp):
+    out = os.path.join(tmp, "arena")
+    r = run([CLIVANE, "game", os.path.join(HERE, "examples", "gemgrid_game.py"),
+             "--fullstack", "--out", out])
+    assert r.returncode == 0, r.stderr
+    manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+    assert manifest["path"] == "game-fullstack", manifest
+    assert manifest["mode"] == "fullstack", manifest
+    assert manifest["server"] == "game_server.py", manifest
+    assert manifest["commands"] == ["act", "actions", "finish", "leaderboard",
+                                    "new", "observe"], manifest["commands"]
+    for rel in ("game_server.py", "web/index.html", "SKILL.md",
+                "gemgrid_game.py", manifest["entry"], "test_smoke.py"):
+        assert os.path.isfile(os.path.join(out, rel)), rel
+    html = open(os.path.join(out, "web", "index.html")).read()
+    assert "cdn" not in html.lower(), "web UI must be dependency-free"
+    assert 'src="http' not in html and "href=\"http" not in html, html[:200]
+    assert "leaderboard" in html.lower() and "0A1931" in html, "navy arena UI"
+    skill = open(os.path.join(out, "SKILL.md")).read()
+    assert "/sessions" in skill and "finish" in skill, skill
+    # generation is deterministic, like every other path
+    out2 = os.path.join(tmp, "arena2")
+    r = run([CLIVANE, "game", os.path.join(HERE, "examples", "gemgrid_game.py"),
+             "--fullstack", "--out", out2])
+    assert r.returncode == 0, r.stderr
+    assert digest_dir(out) == digest_dir(out2), "arena generation diverged"
+    # the plain local game CLI is untouched by the new mode
+    plain = os.path.join(tmp, "plain")
+    r = run([CLIVANE, "game", os.path.join(HERE, "examples", "gemgrid_game.py"),
+             "--out", plain])
+    assert r.returncode == 0, r.stderr
+    p_manifest = clivane.read_json(os.path.join(plain, "manifest.json"))
+    assert p_manifest["path"] == "game" and "mode" not in p_manifest, p_manifest
+
+
+def t_game_fullstack_live(tmp):
+    out = os.path.join(tmp, "arena")
+    r = run([CLIVANE, "game", os.path.join(HERE, "examples", "gemgrid_game.py"),
+             "--fullstack", "--out", out])
+    assert r.returncode == 0, r.stderr
+    manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+    entry = os.path.join(out, manifest["entry"])
+    actions = _solve_gemgrid(7)
+    port = clivane.free_port()
+    base = "http://127.0.0.1:%d" % port
+    proc = _start_server(out, port, server_file="game_server.py")
+    try:
+        # web UI is served at /
+        req = urllib.request.Request(base + "/")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            assert resp.status == 200, resp.status
+            assert resp.headers.get_content_type() == "text/html", resp.headers
+            html = resp.read().decode("utf-8", "replace")
+        assert "leaderboard" in html.lower(), "UI leaderboard panel missing"
+        # two parallel sessions, isolated state
+        status, a = clivane.http_json("POST", base + "/sessions",
+                                      {"seed": 7, "player": "agent"})
+        assert status == 201 and a["id"] == "s1", (status, a)
+        status, h = clivane.http_json("POST", base + "/sessions",
+                                      {"seed": 3, "player": "human-sim"})
+        assert status == 201 and h["id"] == "s2", (status, h)
+        # agent wins its episode over HTTP
+        last = None
+        for action in actions:
+            status, last = clivane.http_json(
+                "POST", base + "/sessions/s1/act", {"action": action})
+            assert status == 200, (action, status, last)
+        assert last["done"] is True, last
+        # isolation: the other session never moved
+        status, obs = clivane.http_json("GET", base + "/sessions/s2/observe")
+        assert obs["observe"]["steps"] == 0, obs
+        assert obs["observe"]["player"] == [0, 0], obs
+        # illegal action -> 400
+        status, err = clivane.http_json("POST", base + "/sessions/s2/act",
+                                        {"action": "jump"})
+        assert status == 400 and "illegal action" in err["error"], (status, err)
+        # finish refuses an episode that is not done
+        status, err = clivane.http_json("POST", base + "/sessions/s2/finish", {})
+        assert status == 400 and "not done" in err["error"], (status, err)
+        # there is no manual score path: extra fields change nothing
+        status, fin = clivane.http_json("POST", base + "/sessions/s1/finish",
+                                        {"score": 99999})
+        assert status == 200 and fin["verified"] is True, (status, fin)
+        assert fin["score"] == 30, fin  # replayed truth, not the claim
+        # a finished session cannot be recorded twice
+        status, err = clivane.http_json("POST", base + "/sessions/s1/finish", {})
+        assert status == 400, (status, err)
+        # leaderboard holds exactly the one verified score
+        status, board = clivane.http_json("GET", base + "/leaderboard")
+        scores = board["scores"]
+        assert len(scores) == 1, scores
+        entry0 = scores[0]
+        assert entry0["player"] == "agent" and entry0["seed"] == 7, entry0
+        assert entry0["score"] == 30 and entry0["verified"] is True, entry0
+        assert entry0["actions"] == actions, entry0
+        # remote client CLI plays against the same server
+        env = dict(os.environ)
+        env["CLIVANE_REMOTE"] = base
+        r = subprocess.run([sys.executable, entry, "leaderboard", "--json"],
+                           cwd=out, env=env, capture_output=True, text=True,
+                           timeout=30)
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["result"]["scores"][0]["player"] == "agent", r.stdout
+        r = subprocess.run([sys.executable, entry, "new", "--seed", "7",
+                            "--player", "bot", "--json"],
+                           cwd=out, env=env, capture_output=True, text=True,
+                           timeout=30)
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["result"]["id"] == "s3", r.stdout
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    # persistence: scores.json survives a server restart
+    scores_path = os.path.join(out, "scores.json")
+    saved = clivane.read_json(scores_path)
+    assert len(saved) == 1 and saved[0]["verified"] is True, saved
+    port2 = clivane.free_port()
+    base2 = "http://127.0.0.1:%d" % port2
+    proc = _start_server(out, port2, server_file="game_server.py")
+    try:
+        status, board = clivane.http_json("GET", base2 + "/leaderboard")
+        assert len(board["scores"]) == 1, board
+        assert board["scores"][0]["score"] == 30, board
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    # token gate: POSTs need the header when a token is set
+    port3 = clivane.free_port()
+    base3 = "http://127.0.0.1:%d" % port3
+    proc = _start_server(out, port3, {"CLIVANE_TOKEN": "s3cret"},
+                         server_file="game_server.py")
+    try:
+        status, err = clivane.http_json("POST", base3 + "/sessions",
+                                        {"seed": 1, "player": "x"})
+        assert status == 401, (status, err)
+        status, ok = clivane.http_json("POST", base3 + "/sessions",
+                                       {"seed": 1, "player": "x"},
+                                       headers={"X-Clivane-Token": "s3cret"})
+        assert status == 201, (status, ok)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
 def t_examples_registry(tmp):
     registry = clivane.read_json(os.path.join(HERE, "examples", "registry.json"))
     pkgs = registry["packages"]
-    assert len(pkgs) == 5, [p["name"] for p in pkgs]
+    assert len(pkgs) == 6, [p["name"] for p in pkgs]
     assert all(p["tier"] == "Gold" for p in pkgs), pkgs
     paths = sorted(p["path"] for p in pkgs)
-    assert paths == ["forge", "game", "mirror", "openapi", "serve"], paths
-    # live recompute (never trust the file): both new packages replay PASS
-    for child in ("gemgrid-cli", "notebox-server"):
+    assert paths == ["forge", "game", "game-fullstack", "mirror",
+                     "openapi", "serve"], paths
+    # live recompute (never trust the file): the newer packages replay PASS
+    for child in ("gemgrid-cli", "notebox-server", "gemgrid-arena"):
         pkg_dir = os.path.join(HERE, "examples", child)
         status, detail = clivane.verify_package(pkg_dir)
         assert status == "PASS", (child, status, detail)
@@ -459,7 +607,9 @@ def main():
         ("game: contract valid + invalid rejected", t_game_contract),
         ("game: deterministic episode + replay tamper FAIL", t_game_episode),
         ("serve: live server health/run/client/probe/token", t_serve_live),
-        ("examples: registry holds 5 Gold packages", t_examples_registry),
+        ("game fullstack: arena package shape + determinism", t_game_fullstack_generate),
+        ("game fullstack: live arena UI/sessions/verify/leaderboard", t_game_fullstack_live),
+        ("examples: registry holds 6 Gold packages", t_examples_registry),
     ]
     with tempfile.TemporaryDirectory(prefix="clivane-test-") as tmp:
         for name, fn in tests:

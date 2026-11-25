@@ -99,6 +99,54 @@ when it does not. Because replay is an ordinary CLI command, it joins
 package: a game package reaches Gold only if its winning episode
 replays identically in a fresh copy.
 
+### Fullstack mode — game arena (v1.2.0)
+
+`clivane game <module> --fullstack` grows the same contract into a
+complete arena package (the local episode CLI above remains available
+and unchanged). Three layers, generated from the one contract:
+
+1. **Backend — `game_server.py`** (stdlib `http.server` only). A
+   session model replaces the single local `session.json`:
+   `POST /sessions {seed, player}` creates an episode with a unique id;
+   sessions live side by side in memory, each with its own state,
+   transcript and done flag — acting on one can never touch another.
+   `GET /sessions/<id>/observe`, `GET /sessions/<id>/actions`,
+   `POST /sessions/<id>/act` (illegal actions rejected 400 before
+   stepping), `GET /sessions`, `GET /health`.
+2. **Frontend — `web/index.html`**, served by the same process at
+   `GET /`. One static vanilla-JS page, zero dependencies, no CDN:
+   renders `observe()` as a coloured grid when the observation carries
+   a `grid`, builds the entity grid from `player`/`gems`/`obstacles`
+   observations otherwise, and falls back to a JSON card + raw state
+   for non-grid games. Legal-action buttons play manually; a
+   new-session form takes seed + player name; a watch mode polls any
+   session's `observe` once a second so a human can follow an agent
+   playing; the leaderboard panel refreshes live.
+3. **Agent access — a remote client CLI** with the local game verbs
+   (`new / observe / actions / act`) plus `finish` and `leaderboard`,
+   speaking HTTP via `--remote` / `$CLIVANE_REMOTE`, exactly like the
+   serve path's client. Humans and agents play the *same* sessions
+   through the *same* API.
+
+**Score verification (the load-bearing rule).** There is deliberately
+no endpoint that accepts a score. `POST /sessions/<id>/finish` takes
+no score from the client: the server replays the session's recorded
+action transcript from its seed and records a score only when the
+replay ends `done` in a state *identical* to the session's live state.
+The recorded score is read from the replayed final observation
+(`score` field; summed step rewards as fallback), the entry
+`{player, seed, actions, score, steps, verified: true}` is appended to
+the persistent `scores.json` (survives restarts), and a session can be
+finished exactly once. `GET /leaderboard` returns only those verified
+entries, best first. A claimed score is therefore never trusted —
+only a reproduced one is.
+
+Security follows the server path's rules: bind localhost by default
+with a loud warning otherwise, optional `X-Clivane-Token` on POSTs,
+and Trace-Seal covers the arena end-to-end (the harness starts
+`game_server.py` on an ephemeral port in a fresh copy and replays the
+client calls, demo episode included, against it).
+
 ## Path 5 — server (new: serve + probe, two directions)
 
 ### serve — module -> HTTP server + remote client

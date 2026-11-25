@@ -8,7 +8,9 @@ Paths:
   forge   - static AST analysis of a Python module -> full agent CLI
   mirror  - wrap an existing CLI tool -> JSON-envelope wrapper CLI
   openapi - OpenAPI 3 JSON spec -> per-operation CLI
-  game    - a Python game obeying the clivane game contract -> episode CLI
+  game    - a Python game obeying the clivane game contract -> episode CLI;
+            with --fullstack, a complete arena: HTTP session server +
+            web UI + remote client CLI + replay-verified leaderboard
   serve   - a Python module -> HTTP JSON server + remote client CLI
   probe   - introspect a live server -> endpoint map + generic client CLI
 
@@ -955,7 +957,9 @@ def skill_md_game(name, mod_name):
     ])
 
 
-def cmd_game(module_path, out_dir):
+def cmd_game(module_path, out_dir, fullstack=False):
+    if fullstack:
+        return cmd_game_fullstack(module_path, out_dir)
     if not os.path.isfile(module_path):
         raise SystemExit("module not found: %s" % module_path)
     validate_game_contract(module_path)
@@ -974,6 +978,686 @@ def cmd_game(module_path, out_dir):
         "entry": entry,
         "source": os.path.basename(module_path),
         "commands": ["act", "actions", "new", "observe", "replay", "status"],
+        "tier": "Bronze",
+    }
+    write_file(os.path.join(out_dir, "manifest.json"),
+               json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest
+
+
+# --------------------------------------------------------------------------
+# GAME FULLSTACK - the game path as a complete arena (v1.2.0)
+#
+# `clivane game <module> --fullstack` emits three layers over the same
+# game contract:
+#   * game_server.py - stdlib HTTP server hosting many isolated episode
+#     sessions, the web UI, and a persistent leaderboard (scores.json).
+#     A score is recorded ONLY by POST /sessions/<id>/finish, which
+#     replays the episode from its seed and requires an identical, done
+#     final state - clients can never submit a score directly.
+#   * web/index.html - a dependency-free page that renders observe()
+#     (grid when the observation carries one, entity grid for
+#     player/gems/obstacles observations, JSON card otherwise), plays
+#     manually via the legal-action buttons, and can watch any session.
+#   * a remote client CLI with the local game verbs (new / observe /
+#     actions / act) plus finish and leaderboard.
+# --------------------------------------------------------------------------
+
+ARENA_SERVER_TEMPLATE = '''#!/usr/bin/env python3
+"""@NAME@ - fullstack game arena server for `@MOD@` (clivane game path).
+
+Three layers, one process (stdlib http.server only):
+  * API    - session endpoints to play the game over HTTP
+  * Web UI - GET / serves web/index.html (vanilla JS, no dependencies)
+  * Proof  - POST /sessions/<id>/finish replays the episode from its
+             seed; a score reaches the persistent leaderboard
+             (scores.json) ONLY when the replay is identical and done.
+             Clients can never submit a score directly.
+
+Binds 127.0.0.1 unless --host/CLIVANE_HOST says otherwise; a non-local
+bind prints a warning. Set --token or CLIVANE_TOKEN to require the
+X-Clivane-Token header on POST endpoints.
+"""
+import argparse
+import importlib
+import itertools
+import json
+import os
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+MODULE = importlib.import_module("@MOD@")
+NAME = "@NAME@"
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCORES_PATH = os.path.join(HERE, "scores.json")
+WEB_INDEX = os.path.join(HERE, "web", "index.html")
+
+LOCK = threading.Lock()
+SESSIONS = {}
+IDS = itertools.count(1)
+
+
+def load_scores():
+    if os.path.isfile(SCORES_PATH):
+        try:
+            with open(SCORES_PATH, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return []
+
+
+SCORES = load_scores()
+
+
+def save_scores():
+    tmp = SCORES_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(SCORES, fh, indent=2, sort_keys=True)
+    os.replace(tmp, SCORES_PATH)
+
+
+def replay(seed, actions):
+    """Re-run an episode from scratch; (final_state, total, done, ok)."""
+    state = MODULE.new_game(seed)
+    total = 0
+    for action in actions:
+        if action not in MODULE.legal_actions(state):
+            return state, total, False, False
+        state, reward, done, _info = MODULE.step(state, action)
+        total += reward
+        if done:
+            break
+    return state, total, bool(done), True
+
+
+def public_session(sess):
+    return {"id": sess["id"], "seed": sess["seed"], "player": sess["player"],
+            "steps": len(sess["actions"]), "done": sess["done"],
+            "finished": sess["finished"],
+            "observe": MODULE.observe(sess["state"]),
+            "actions": MODULE.legal_actions(sess["state"])}
+
+
+class Handler(BaseHTTPRequestHandler):
+    token = None
+
+    def log_message(self, *args):
+        pass
+
+    def _send(self, status, payload, content_type="application/json"):
+        if isinstance(payload, str):
+            body = payload.encode()
+        elif isinstance(payload, bytes):
+            body = payload
+        else:
+            body = json.dumps(payload, indent=2, sort_keys=True,
+                              default=str).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        return json.loads(raw or b"{}")
+
+    def _session(self, sid):
+        sess = SESSIONS.get(sid)
+        if sess is None:
+            self._send(404, {"error": "unknown session: %s" % sid})
+        return sess
+
+    def do_GET(self):
+        parts = [p for p in self.path.split("?")[0].split("/") if p]
+        if not parts:
+            if os.path.isfile(WEB_INDEX):
+                with open(WEB_INDEX, encoding="utf-8") as fh:
+                    self._send(200, fh.read(), "text/html; charset=utf-8")
+            else:
+                self._send(500, {"error": "web/index.html missing"})
+            return
+        if parts == ["health"]:
+            self._send(200, {"status": "ok", "name": NAME})
+            return
+        if parts == ["leaderboard"]:
+            board = sorted(SCORES, key=lambda e: e["score"], reverse=True)
+            self._send(200, {"scores": board})
+            return
+        if parts == ["sessions"]:
+            with LOCK:
+                listing = [public_session(s) for s in SESSIONS.values()]
+            self._send(200, {"sessions": listing})
+            return
+        if len(parts) in (2, 3) and parts[0] == "sessions":
+            sess = self._session(parts[1])
+            if sess is None:
+                return
+            if len(parts) == 2:
+                self._send(200, public_session(sess))
+            elif parts[2] == "observe":
+                self._send(200, {"session": sess["id"],
+                                 "observe": MODULE.observe(sess["state"])})
+            elif parts[2] == "actions":
+                self._send(200, {"session": sess["id"],
+                                 "actions": MODULE.legal_actions(sess["state"])})
+            else:
+                self._send(404, {"error": "not found: %s" % self.path})
+            return
+        self._send(404, {"error": "not found: %s" % self.path})
+
+    def do_POST(self):
+        if self.token and self.headers.get("X-Clivane-Token") != self.token:
+            self._send(401, {"error": "missing or wrong X-Clivane-Token"})
+            return
+        parts = [p for p in self.path.split("?")[0].split("/") if p]
+        try:
+            payload = self._body()
+        except Exception as exc:
+            self._send(400, {"error": "bad JSON body: %s" % exc})
+            return
+        if not isinstance(payload, dict):
+            self._send(400, {"error": "JSON body must be an object"})
+            return
+        if parts == ["sessions"]:
+            seed = payload.get("seed", 0)
+            player = payload.get("player", "player")
+            if not isinstance(seed, int) or isinstance(seed, bool):
+                self._send(400, {"error": "seed must be an integer"})
+                return
+            if not isinstance(player, str) or not player:
+                self._send(400, {"error": "player must be a non-empty string"})
+                return
+            with LOCK:
+                sid = "s%d" % next(IDS)
+                sess = {"id": sid, "seed": seed, "player": player,
+                        "state": MODULE.new_game(seed), "actions": [],
+                        "total_reward": 0, "done": False, "finished": False}
+                SESSIONS[sid] = sess
+                out = public_session(sess)
+            self._send(201, out)
+            return
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "act":
+            sess = self._session(parts[1])
+            if sess is None:
+                return
+            action = payload.get("action")
+            with LOCK:
+                if sess["finished"]:
+                    self._send(400, {"error": "session already finished"})
+                    return
+                if sess["done"]:
+                    self._send(400, {"error": "episode is done"})
+                    return
+                legal = MODULE.legal_actions(sess["state"])
+                if action not in legal:
+                    self._send(400, {"error": "illegal action: %r (legal: %s)"
+                                     % (action, ", ".join(legal))})
+                    return
+                state, reward, done, info = MODULE.step(sess["state"], action)
+                sess["state"] = state
+                sess["actions"].append(action)
+                sess["total_reward"] += reward
+                sess["done"] = bool(done)
+            self._send(200, {"session": sess["id"],
+                             "observe": MODULE.observe(state),
+                             "reward": reward, "done": bool(done),
+                             "info": info})
+            return
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "finish":
+            sess = self._session(parts[1])
+            if sess is None:
+                return
+            with LOCK:
+                if sess["finished"]:
+                    self._send(400, {"error": "session already finished and recorded"})
+                    return
+                if not sess["done"]:
+                    self._send(400, {"error": "episode is not done yet"})
+                    return
+                final, total, done, ok = replay(sess["seed"],
+                                                list(sess["actions"]))
+                if not ok or not done or final != sess["state"]:
+                    self._send(400, {"error": "replay does not reproduce this episode",
+                                     "verified": False})
+                    return
+                obs = MODULE.observe(final)
+                score = obs.get("score")
+                if not isinstance(score, (int, float)) or isinstance(score, bool):
+                    score = total
+                entry = {"player": sess["player"], "seed": sess["seed"],
+                         "actions": list(sess["actions"]), "score": score,
+                         "steps": len(sess["actions"]), "verified": True}
+                SCORES.append(entry)
+                save_scores()
+                sess["finished"] = True
+            self._send(200, {"session": sess["id"], "verified": True,
+                             "score": score, "entry": entry})
+            return
+        self._send(404, {"error": "not found: %s" % self.path})
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog=NAME + " arena server")
+    parser.add_argument("--host", default=os.environ.get("CLIVANE_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int,
+                        default=int(os.environ.get("CLIVANE_PORT", "8800")))
+    parser.add_argument("--token", default=os.environ.get("CLIVANE_TOKEN"))
+    ns = parser.parse_args(argv)
+    if ns.host not in ("127.0.0.1", "localhost", "::1"):
+        print("WARNING: binding %s exposes this arena beyond localhost; "
+              "set a --token before doing this." % ns.host, file=sys.stderr)
+    Handler.token = ns.token
+    server = ThreadingHTTPServer((ns.host, ns.port), Handler)
+    print("%s arena on http://%s:%d" % (NAME, ns.host, ns.port))
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+ARENA_CLIENT_TEMPLATE = '''#!/usr/bin/env python3
+"""@NAME@ client - remote CLI for a clivane fullstack game arena.
+
+The local game verbs (new / observe / actions / act) plus finish and
+leaderboard, but every call is HTTP to the arena server. Base URL:
+--remote, else $CLIVANE_REMOTE, else http://127.0.0.1:8800.
+$CLIVANE_TOKEN is sent as X-Clivane-Token.
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+DEFAULT_REMOTE = "http://127.0.0.1:8800"
+
+
+def call(remote, method, path, payload=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    token = os.environ.get("CLIVANE_TOKEN")
+    if token:
+        headers["X-Clivane-Token"] = token
+    req = urllib.request.Request(remote.rstrip("/") + path, data=data,
+                                 headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"error": raw}
+        print("error: %s" % payload.get("error", exc), file=sys.stderr)
+        raise SystemExit(1)
+    except Exception as exc:
+        print("error: cannot reach arena at %s (%s)" % (remote, exc),
+              file=sys.stderr)
+        raise SystemExit(1)
+
+
+def emit(command, result, as_json):
+    if as_json:
+        print(json.dumps({"command": command, "result": result},
+                         indent=2, sort_keys=True, default=str))
+    else:
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="@NAME@",
+                                description="Remote client for the @MOD@ arena")
+    p.add_argument("--remote",
+                   default=os.environ.get("CLIVANE_REMOTE", DEFAULT_REMOTE),
+                   help="base URL of the arena server")
+    sub = p.add_subparsers(dest="command")
+    n = sub.add_parser("new", help="create a session on the server")
+    n.add_argument("--seed", type=int, default=0)
+    n.add_argument("--player", default="player")
+    n.add_argument("--json", action="store_true")
+    for verb, helptext in (("observe", "observe a session"),
+                           ("actions", "legal actions of a session"),
+                           ("finish", "verify by replay and record the score")):
+        q = sub.add_parser(verb, help=helptext)
+        q.add_argument("--session", required=True)
+        q.add_argument("--json", action="store_true")
+    t = sub.add_parser("act", help="apply one action to a session")
+    t.add_argument("action")
+    t.add_argument("--session", required=True)
+    t.add_argument("--json", action="store_true")
+    lb = sub.add_parser("leaderboard", help="verified scores, best first")
+    lb.add_argument("--json", action="store_true")
+    return p
+
+
+def main(argv=None):
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if not ns.command:
+        parser.print_help()
+        return 2
+    if ns.command == "new":
+        result = call(ns.remote, "POST", "/sessions",
+                      {"seed": ns.seed, "player": ns.player})
+    elif ns.command == "observe":
+        result = call(ns.remote, "GET", "/sessions/%s/observe" % ns.session)
+    elif ns.command == "actions":
+        result = call(ns.remote, "GET", "/sessions/%s/actions" % ns.session)
+    elif ns.command == "act":
+        result = call(ns.remote, "POST", "/sessions/%s/act" % ns.session,
+                      {"action": ns.action})
+    elif ns.command == "finish":
+        result = call(ns.remote, "POST", "/sessions/%s/finish" % ns.session, {})
+    elif ns.command == "leaderboard":
+        result = call(ns.remote, "GET", "/leaderboard")
+    else:
+        return 2
+    emit(ns.command, result, ns.json)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+ARENA_WEB_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@NAME@ - clivane game arena</title>
+<style>
+:root{--navy:#0A1931;--blue:#185ADB;--accent:#FF7A00;--bg:#eef1f7;--card:#ffffff;--ink:#16233c;--muted:#5b6b87;--line:#d7deeb}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--navy);color:#fff;padding:18px 22px}
+header h1{margin:0;font-size:20px}
+header p{margin:4px 0 0;color:#b9c6de;font-size:13px}
+main{max-width:1020px;margin:0 auto;padding:18px;display:grid;grid-template-columns:1.2fr .8fr;gap:16px}
+@media(max-width:760px){main{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.card h2{margin:0 0 10px;font-size:15px;color:var(--navy)}
+label{font-size:12px;color:var(--muted);display:block;margin:8px 0 4px}
+input{width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:14px}
+button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer}
+button.secondary{background:var(--navy)}
+button.accent{background:var(--accent)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.board{display:grid;gap:4px;margin:12px 0}
+.cell{aspect-ratio:1;border-radius:6px;background:#e7ecf5;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;color:var(--navy)}
+.cell.player{background:var(--blue);color:#fff}
+.cell.gem{background:#ffd166;color:#7a4d00}
+.cell.obstacle{background:var(--navy);color:#fff}
+.cell.other{background:#c9d6f2}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{border-bottom:1px solid var(--line);padding:6px 4px;text-align:left}
+pre{background:#0A1931;color:#dbe6ff;border-radius:8px;padding:10px;overflow:auto;font-size:12px;max-height:260px}
+.muted{color:var(--muted);font-size:13px}
+.badge{display:inline-block;background:#e7ecf5;border-radius:20px;padding:2px 10px;font-size:12px;color:var(--navy);margin-right:4px}
+</style>
+</head>
+<body>
+<header>
+<h1>@NAME@</h1>
+<p>Fullstack game arena by clivane - play in the browser, or drive the same sessions with the agent CLI. Scores reach the leaderboard only after a deterministic replay verifies them.</p>
+</header>
+<main>
+<section class="card">
+<h2>Game</h2>
+<div class="row">
+<div style="flex:1;min-width:120px"><label>Player name</label><input id="player" value="human"></div>
+<div style="width:110px"><label>Seed</label><input id="seed" type="number" value="7"></div>
+<div style="padding-top:22px"><button id="newBtn">New session</button></div>
+</div>
+<label>Session id (play it, or type any id to watch it)</label>
+<div class="row">
+<input id="sessionId" style="flex:1" placeholder="create a session, or type an id to watch">
+<button class="secondary" id="watchBtn">Watch</button>
+<label class="row" style="margin:0"><input type="checkbox" id="autoWatch" style="width:auto"> auto-refresh (1s)</label>
+</div>
+<div id="board" class="board"></div>
+<div id="stateCard"></div>
+<div class="row" id="actions"></div>
+<div class="row" style="margin-top:10px">
+<button class="accent" id="finishBtn">Finish &amp; verify score</button>
+<span id="status" class="muted"></span>
+</div>
+</section>
+<section class="card">
+<h2>Leaderboard - verified scores only</h2>
+<table><thead><tr><th>#</th><th>Player</th><th>Seed</th><th>Score</th><th>Steps</th></tr></thead><tbody id="boardBody"></tbody></table>
+<p class="muted">A score appears here only when the server replays the whole episode from its seed and the final state matches exactly. There is no way to submit a score directly.</p>
+<h2 style="margin-top:18px">Live sessions</h2>
+<div id="sessions" class="muted">none yet</div>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let timer=null;
+async function api(method,path,body){
+  const opt={method:method,headers:{}};
+  if(body!==undefined){opt.headers["Content-Type"]="application/json";opt.body=JSON.stringify(body);}
+  const r=await fetch(path,opt);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.error||("HTTP "+r.status));
+  return data;
+}
+function cellClass(v){
+  if(v==="P")return "cell player";
+  if(v==="\u25c6"||v==="G")return "cell gem";
+  if(v==="#"||v==="X")return "cell obstacle";
+  if(v==="."||v===""||v===0||v===null)return "cell";
+  return "cell other";
+}
+function gridFromObserve(obs){
+  if(Array.isArray(obs.grid)) return obs.grid;
+  if(obs.player&&obs.gems&&obs.obstacles){
+    let n=1;
+    const pts=[obs.player].concat(obs.gems,obs.obstacles);
+    pts.forEach(p=>{n=Math.max(n,p[0]+1,p[1]+1);});
+    if(typeof obs.size==="number") n=obs.size;
+    const g=Array.from({length:n},()=>Array(n).fill("."));
+    obs.obstacles.forEach(p=>{g[p[1]][p[0]]="#";});
+    obs.gems.forEach(p=>{g[p[1]][p[0]]="\u25c6";});
+    g[obs.player[1]][obs.player[0]]="P";
+    return g;
+  }
+  return null;
+}
+function render(obs){
+  const board=$("board");board.innerHTML="";
+  const grid=gridFromObserve(obs);
+  if(grid){
+    board.style.gridTemplateColumns="repeat("+grid.length+",1fr)";
+    grid.forEach(row=>row.forEach(v=>{
+      const d=document.createElement("div");d.className=cellClass(v);
+      d.textContent=(v==="."?"":v);board.appendChild(d);
+    }));
+  }
+  const bits=[];
+  if(typeof obs.score!=="undefined")bits.push("score "+obs.score);
+  if(typeof obs.steps!=="undefined")bits.push("steps "+obs.steps);
+  if(typeof obs.moves_left!=="undefined")bits.push("moves left "+obs.moves_left);
+  bits.push(obs.done?(obs.won?"won":"done"):"playing");
+  $("stateCard").innerHTML="<p>"+bits.map(b=>'<span class="badge">'+b+"</span>").join(" ")+"</p><pre>"+JSON.stringify(obs,null,2)+"</pre>";
+}
+async function refreshActions(){
+  const id=$("sessionId").value.trim();if(!id)return;
+  try{
+    const data=await api("GET","/sessions/"+id+"/actions");
+    const box=$("actions");box.innerHTML="";
+    data.actions.forEach(a=>{
+      const b=document.createElement("button");b.textContent=a;
+      b.onclick=()=>act(a);box.appendChild(b);
+    });
+  }catch(e){$("status").textContent=e.message;}
+}
+async function show(id){
+  const data=await api("GET","/sessions/"+id+"/observe");
+  render(data.observe);
+}
+async function act(a){
+  const id=$("sessionId").value.trim();if(!id)return;
+  try{
+    const data=await api("POST","/sessions/"+id+"/act",{action:a});
+    render(data.observe);
+    $("status").textContent="reward "+data.reward+(data.done?" - episode done":"");
+    await refreshActions();await refreshSessions();
+  }catch(e){$("status").textContent=e.message;}
+}
+async function newSession(){
+  try{
+    const data=await api("POST","/sessions",{player:$("player").value||"player",seed:parseInt($("seed").value||"0",10)});
+    $("sessionId").value=data.id;
+    render(data.observe);
+    $("status").textContent="session "+data.id+" created";
+    await refreshActions();await refreshSessions();
+  }catch(e){$("status").textContent=e.message;}
+}
+async function finish(){
+  const id=$("sessionId").value.trim();if(!id)return;
+  try{
+    const data=await api("POST","/sessions/"+id+"/finish",{});
+    $("status").textContent="verified - score "+data.score+" recorded";
+    await refreshBoard();
+  }catch(e){$("status").textContent=e.message;}
+}
+async function refreshBoard(){
+  try{
+    const data=await api("GET","/leaderboard");
+    $("boardBody").innerHTML=data.scores.map((s,i)=>"<tr><td>"+(i+1)+"</td><td>"+s.player+"</td><td>"+s.seed+"</td><td><strong>"+s.score+"</strong></td><td>"+s.steps+"</td></tr>").join("");
+  }catch(e){}
+}
+async function refreshSessions(){
+  try{
+    const data=await api("GET","/sessions");
+    $("sessions").innerHTML=data.sessions.length?data.sessions.map(s=>'<div><button class="secondary" data-sid="'+s.id+'">'+s.id+"</button> "+s.player+" - seed "+s.seed+" - "+s.steps+" steps"+(s.done?" - done":"")+"</div>").join(""):"none yet";
+    document.querySelectorAll("[data-sid]").forEach(b=>{b.onclick=()=>{$("sessionId").value=b.getAttribute("data-sid");show(b.getAttribute("data-sid")).then(refreshActions);};});
+  }catch(e){}
+}
+$("newBtn").onclick=newSession;
+$("finishBtn").onclick=finish;
+$("watchBtn").onclick=()=>{const id=$("sessionId").value.trim();if(id){show(id).then(refreshActions);}};
+$("autoWatch").onchange=e=>{
+  if(timer){clearInterval(timer);timer=null;}
+  if(e.target.checked){timer=setInterval(()=>{const id=$("sessionId").value.trim();if(id)show(id);refreshBoard();refreshSessions();},1000);}
+};
+refreshBoard();refreshSessions();
+setInterval(refreshBoard,5000);
+</script>
+</body>
+</html>
+"""
+
+
+def skill_md_game_fullstack(name, mod_name):
+    return "\n".join([
+        "# %s" % name,
+        "",
+        "Fullstack arena for the game `%s` (clivane game path, `--fullstack`)." % mod_name,
+        "One game contract, three layers: an HTTP session server, a web UI,",
+        "and a remote client CLI - plus a leaderboard that only accepts",
+        "replay-verified scores.",
+        "",
+        "## Run the arena",
+        "",
+        "```bash",
+        "python3 game_server.py                    # 127.0.0.1:8800, UI at /",
+        "python3 game_server.py --token SECRET     # require X-Clivane-Token on POSTs",
+        "```",
+        "",
+        "Open http://127.0.0.1:8800/ to play in the browser or watch any",
+        "session live. Verified scores persist in `scores.json` next to",
+        "the server and survive restarts.",
+        "",
+        "## Endpoints",
+        "",
+        "| Method | Path | Meaning |",
+        "|---|---|---|",
+        "| GET | `/` | the web UI (static, no dependencies) |",
+        "| GET | `/health` | `{\"status\": \"ok\"}` |",
+        "| POST | `/sessions` | `{\"seed\": N, \"player\": \"name\"}` -> new isolated session |",
+        "| GET | `/sessions` | list live sessions |",
+        "| GET | `/sessions/<id>/observe` | current observation |",
+        "| GET | `/sessions/<id>/actions` | legal actions now |",
+        "| POST | `/sessions/<id>/act` | `{\"action\": \"...\"}` -> step (illegal action = 400) |",
+        "| POST | `/sessions/<id>/finish` | replay-verify the episode; record the score |",
+        "| GET | `/leaderboard` | verified scores, best first |",
+        "",
+        "## Play as an agent (remote client CLI)",
+        "",
+        "```bash",
+        "export CLIVANE_REMOTE=http://127.0.0.1:8800",
+        "python3 %s new --seed 7 --player agent --json   # -> session id" % (name.replace("-", "_") + "_client.py"),
+        "python3 %s act down --session s1 --json" % (name.replace("-", "_") + "_client.py"),
+        "python3 %s finish --session s1 --json           # verified score" % (name.replace("-", "_") + "_client.py"),
+        "python3 %s leaderboard --json" % (name.replace("-", "_") + "_client.py"),
+        "```",
+        "",
+        "## Score verification (anti fake-claim)",
+        "",
+        "- There is NO endpoint that accepts a score. `finish` takes no",
+        "  score from the client - the server replays the session's whole",
+        "  action transcript from its seed and records a score only when",
+        "  the replay ends `done` in a state identical to the session's.",
+        "- The recorded score is read from the replayed final observation",
+        "  (`score` field) or, failing that, the summed step rewards.",
+        "- A session can be finished once; unfinished or non-done",
+        "  episodes are rejected (400).",
+        "",
+        "## Security",
+        "",
+        "- Default bind is localhost only; a non-local bind warns loudly.",
+        "- Set a token before exposing the arena beyond your machine.",
+        "- Sessions are isolated in memory per id; the only shared state",
+        "  is the append-only verified leaderboard.",
+        "",
+    ])
+
+
+def cmd_game_fullstack(module_path, out_dir):
+    if not os.path.isfile(module_path):
+        raise SystemExit("module not found: %s" % module_path)
+    validate_game_contract(module_path)
+    mod_name = os.path.splitext(os.path.basename(module_path))[0]
+    name = mod_name.replace("_", "-") + "-arena"
+    entry = name.replace("-", "_") + "_client.py"
+    os.makedirs(out_dir, exist_ok=True)
+    shutil.copyfile(module_path, os.path.join(out_dir, os.path.basename(module_path)))
+    write_file(os.path.join(out_dir, "game_server.py"),
+               ARENA_SERVER_TEMPLATE.replace("@NAME@", name).replace("@MOD@", mod_name))
+    write_file(os.path.join(out_dir, "web", "index.html"),
+               ARENA_WEB_HTML.replace("@NAME@", name))
+    write_file(os.path.join(out_dir, entry),
+               ARENA_CLIENT_TEMPLATE.replace("@NAME@", name).replace("@MOD@", mod_name))
+    write_file(os.path.join(out_dir, "SKILL.md"), skill_md_game_fullstack(name, mod_name))
+    write_file(os.path.join(out_dir, "test_smoke.py"), SMOKE_TEMPLATE.replace("@ENTRY@", entry))
+    manifest = {
+        "name": name,
+        "path": "game-fullstack",
+        "mode": "fullstack",
+        "entry": entry,
+        "server": "game_server.py",
+        "source": os.path.basename(module_path),
+        "commands": ["act", "actions", "finish", "leaderboard", "new", "observe"],
         "tier": "Bronze",
     }
     write_file(os.path.join(out_dir, "manifest.json"),
@@ -1582,13 +2266,15 @@ def normalise(text, pkg_dir):
 def pkg_runtime(work, manifest):
     """Runtime context for probing a package copy.
 
-    Plain packages need nothing. `serve` packages get their generated
+    Plain packages need nothing. Packages whose manifest names a
+    `server` file (`serve` packages, fullstack game arenas) get that
     server started on an ephemeral localhost port, and the client calls
     receive CLIVANE_REMOTE / CLIVANE_PORT pointing at it - so golden
     traces cover real client<->server traffic while argv stays stable.
     Yields the extra environment dict for run_cli calls.
     """
-    if manifest.get("path") != "serve":
+    server_file = manifest.get("server")
+    if not server_file:
         yield {}
         return
     port = free_port()
@@ -1597,7 +2283,7 @@ def pkg_runtime(work, manifest):
     full_env = dict(os.environ)
     full_env.update(env)
     proc = subprocess.Popen(
-        [sys.executable, manifest.get("server", "server.py")],
+        [sys.executable, server_file],
         cwd=work, env=full_env, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL)
     try:
@@ -1771,9 +2457,11 @@ def build_main_parser():
     o.add_argument("spec")
     o.add_argument("--out", required=True)
 
-    g = sub.add_parser("game", help="game module (clivane game contract) -> episode CLI")
+    g = sub.add_parser("game", help="game module (clivane game contract) -> episode CLI; --fullstack -> arena server + web UI + remote client")
     g.add_argument("module")
     g.add_argument("--out", required=True)
+    g.add_argument("--fullstack", action="store_true",
+                   help="generate the fullstack arena package instead of the local CLI")
 
     s = sub.add_parser("serve", help="Python module -> HTTP JSON server + remote client")
     s.add_argument("module")
@@ -1812,9 +2500,13 @@ def main(argv=None):
         print("generated %s -> %s (%d operations)" % (manifest["name"], ns.out, len(manifest["commands"])))
         return 0
     if ns.command == "game":
-        manifest = cmd_game(ns.module, ns.out)
-        print("generated game CLI %s -> %s (contract OK, %d commands)"
-              % (manifest["name"], ns.out, len(manifest["commands"])))
+        manifest = cmd_game(ns.module, ns.out, fullstack=ns.fullstack)
+        if manifest.get("mode") == "fullstack":
+            print("generated fullstack arena %s -> %s (contract OK, game_server.py + web UI + %s, %d commands)"
+                  % (manifest["name"], ns.out, manifest["entry"], len(manifest["commands"])))
+        else:
+            print("generated game CLI %s -> %s (contract OK, %d commands)"
+                  % (manifest["name"], ns.out, len(manifest["commands"])))
         return 0
     if ns.command == "serve":
         manifest = cmd_serve(ns.module, ns.out)
