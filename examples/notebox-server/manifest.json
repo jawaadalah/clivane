@@ -1,0 +1,15 @@
+{
+  "commands": [
+    "count-notes",
+    "create-note",
+    "delete-note",
+    "list-notes",
+    "search-notes"
+  ],
+  "entry": "sample_app_server_client.py",
+  "name": "sample-app-server",
+  "path": "serve",
+  "server": "server.py",
+  "source": "sample_app.py",
+  "tier": "Bronze"
+}

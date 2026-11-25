@@ -1,0 +1,90 @@
+{
+  "calls": [
+    {
+      "argv": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-server [-h] [--remote REMOTE]\n                         {count-notes,create-note,delete-note,list-notes,search-notes}\n                         ...\n\nRemote client for sample_app\n\npositional arguments:\n  {count-notes,create-note,delete-note,list-notes,search-notes}\n    count-notes         Return how many notes exist.\n    create-note         Create a note with a title and an optional body;\n                        returns the note.\n    delete-note         Delete a note by id; returns True when a note was\n                        removed.\n    list-notes          List all notes, in creation order.\n    search-notes        Find notes whose title or body contains the query\n                        (case-insensitive).\n\noptions:\n  -h, --help            show this help message and exit\n  --remote REMOTE       base URL of the clivane serve server"
+    },
+    {
+      "argv": [
+        "count-notes",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-server count-notes [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json      structured JSON output"
+    },
+    {
+      "argv": [
+        "create-note",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-server create-note [-h] --title TITLE [--body BODY] [--json]\n\noptions:\n  -h, --help     show this help message and exit\n  --title TITLE  str\n  --body BODY    str\n  --json         structured JSON output"
+    },
+    {
+      "argv": [
+        "delete-note",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-server delete-note [-h] --note-id NOTE_ID [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --note-id NOTE_ID  int\n  --json             structured JSON output"
+    },
+    {
+      "argv": [
+        "list-notes",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-server list-notes [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json      structured JSON output"
+    },
+    {
+      "argv": [
+        "search-notes",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-server search-notes [-h] --query QUERY [--json]\n\noptions:\n  -h, --help     show this help message and exit\n  --query QUERY  str\n  --json         structured JSON output"
+    },
+    {
+      "argv": [
+        "create-note",
+        "--title",
+        "Alpha",
+        "--body",
+        "first",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"create-note\",\n  \"result\": {\n    \"body\": \"first\",\n    \"id\": 1,\n    \"title\": \"Alpha\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "list-notes",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"list-notes\",\n  \"result\": [\n    {\n      \"body\": \"first\",\n      \"id\": 1,\n      \"title\": \"Alpha\"\n    }\n  ]\n}"
+    },
+    {
+      "argv": [
+        "count-notes",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"count-notes\",\n  \"result\": 1\n}"
+    }
+  ],
+  "package": "sample-app-server",
+  "seal_version": 1
+}

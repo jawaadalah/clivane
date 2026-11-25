@@ -1,0 +1,1 @@
+[["create-note", "--title", "Alpha", "--body", "first", "--json"], ["list-notes", "--json"], ["count-notes", "--json"]]
