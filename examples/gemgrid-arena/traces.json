@@ -1,0 +1,197 @@
+{
+  "calls": [
+    {
+      "argv": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-arena [-h] [--remote REMOTE]\n                          {new,observe,actions,finish,act,leaderboard} ...\n\nRemote client for the gemgrid_game arena\n\npositional arguments:\n  {new,observe,actions,finish,act,leaderboard}\n    new                 create a session on the server\n    observe             observe a session\n    actions             legal actions of a session\n    finish              verify by replay and record the score\n    act                 apply one action to a session\n    leaderboard         verified scores, best first\n\noptions:\n  -h, --help            show this help message and exit\n  --remote REMOTE       base URL of the arena server"
+    },
+    {
+      "argv": [
+        "act",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-arena act [-h] --session SESSION [--json] action\n\npositional arguments:\n  action\n\noptions:\n  -h, --help         show this help message and exit\n  --session SESSION\n  --json"
+    },
+    {
+      "argv": [
+        "actions",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-arena actions [-h] --session SESSION [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --session SESSION\n  --json"
+    },
+    {
+      "argv": [
+        "finish",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-arena finish [-h] --session SESSION [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --session SESSION\n  --json"
+    },
+    {
+      "argv": [
+        "leaderboard",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-arena leaderboard [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "new",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-arena new [-h] [--seed SEED] [--player PLAYER] [--json]\n\noptions:\n  -h, --help       show this help message and exit\n  --seed SEED\n  --player PLAYER\n  --json"
+    },
+    {
+      "argv": [
+        "observe",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-arena observe [-h] --session SESSION [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --session SESSION\n  --json"
+    },
+    {
+      "argv": [
+        "new",
+        "--seed",
+        "7",
+        "--player",
+        "agent",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"new\",\n  \"result\": {\n    \"actions\": [\n      \"down\"\n    ],\n    \"done\": false,\n    \"finished\": false,\n    \"id\": \"s1\",\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          0,\n          2\n        ],\n        [\n          0,\n          3\n        ],\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 40,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        0\n      ],\n      \"score\": 0,\n      \"steps\": 0,\n      \"won\": false\n    },\n    \"player\": \"agent\",\n    \"seed\": 7,\n    \"steps\": 0\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "down",
+        "--session",
+        "s1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 0\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          0,\n          2\n        ],\n        [\n          0,\n          3\n        ],\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 39,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        1\n      ],\n      \"score\": 0,\n      \"steps\": 1,\n      \"won\": false\n    },\n    \"reward\": 0,\n    \"session\": \"s1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "down",
+        "--session",
+        "s1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"gem\",\n      \"score\": 10\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          0,\n          3\n        ],\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 38,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        2\n      ],\n      \"score\": 10,\n      \"steps\": 2,\n      \"won\": false\n    },\n    \"reward\": 10,\n    \"session\": \"s1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "down",
+        "--session",
+        "s1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"gem\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 37,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        3\n      ],\n      \"score\": 20,\n      \"steps\": 3,\n      \"won\": false\n    },\n    \"reward\": 10,\n    \"session\": \"s1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "right",
+        "--session",
+        "s1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 36,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        1,\n        3\n      ],\n      \"score\": 20,\n      \"steps\": 4,\n      \"won\": false\n    },\n    \"reward\": 0,\n    \"session\": \"s1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "up",
+        "--session",
+        "s1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 35,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        1,\n        2\n      ],\n      \"score\": 20,\n      \"steps\": 5,\n      \"won\": false\n    },\n    \"reward\": 0,\n    \"session\": \"s1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "right",
+        "--session",
+        "s1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 34,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        2,\n        2\n      ],\n      \"score\": 20,\n      \"steps\": 6,\n      \"won\": false\n    },\n    \"reward\": 0,\n    \"session\": \"s1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "right",
+        "--session",
+        "s1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 33,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        3,\n        2\n      ],\n      \"score\": 20,\n      \"steps\": 7,\n      \"won\": false\n    },\n    \"reward\": 0,\n    \"session\": \"s1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "right",
+        "--session",
+        "s1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": true,\n    \"info\": {\n      \"event\": \"win\",\n      \"score\": 30\n    },\n    \"observe\": {\n      \"done\": true,\n      \"gems\": [],\n      \"moves_left\": 32,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        4,\n        2\n      ],\n      \"score\": 30,\n      \"steps\": 8,\n      \"won\": true\n    },\n    \"reward\": 10,\n    \"session\": \"s1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "finish",
+        "--session",
+        "s1",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"finish\",\n  \"result\": {\n    \"entry\": {\n      \"actions\": [\n        \"down\",\n        \"down\",\n        \"down\",\n        \"right\",\n        \"up\",\n        \"right\",\n        \"right\",\n        \"right\"\n      ],\n      \"player\": \"agent\",\n      \"score\": 30,\n      \"seed\": 7,\n      \"steps\": 8,\n      \"verified\": true\n    },\n    \"score\": 30,\n    \"session\": \"s1\",\n    \"verified\": true\n  }\n}"
+    },
+    {
+      "argv": [
+        "leaderboard",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"leaderboard\",\n  \"result\": {\n    \"scores\": [\n      {\n        \"actions\": [\n          \"down\",\n          \"down\",\n          \"down\",\n          \"right\",\n          \"up\",\n          \"right\",\n          \"right\",\n          \"right\"\n        ],\n        \"player\": \"agent\",\n        \"score\": 30,\n        \"seed\": 7,\n        \"steps\": 8,\n        \"verified\": true\n      }\n    ]\n  }\n}"
+    }
+  ],
+  "package": "gemgrid-game-arena",
+  "seal_version": 1
+}

@@ -1,0 +1,17 @@
+{
+  "commands": [
+    "act",
+    "actions",
+    "finish",
+    "leaderboard",
+    "new",
+    "observe"
+  ],
+  "entry": "gemgrid_game_arena_client.py",
+  "mode": "fullstack",
+  "name": "gemgrid-game-arena",
+  "path": "game-fullstack",
+  "server": "game_server.py",
+  "source": "gemgrid_game.py",
+  "tier": "Bronze"
+}
