@@ -4,6 +4,21 @@
       "command_list": [
         "act",
         "actions",
+        "finish",
+        "leaderboard",
+        "new",
+        "observe"
+      ],
+      "commands": 6,
+      "dir": "gemgrid-arena",
+      "name": "gemgrid-game-arena",
+      "path": "game-fullstack",
+      "tier": "Gold"
+    },
+    {
+      "command_list": [
+        "act",
+        "actions",
         "new",
         "observe",
         "replay",
