@@ -15,6 +15,28 @@ The game module obeys the clivane game contract: `new_game(seed)`,
 - `status [--json]` - seed, steps taken, done flag, last reward.
 - `replay --seed N --actions a,b,c [--json]` - re-play from scratch
   and verify the final state is identical (seed determinism).
+- `autopilot [--strategy greedy|bfs|random] [--strategy-file f.py]`
+  `[--seed N] [--max-steps N] [--max-seconds N] [--target-score N]`
+  `[--dry-run]` - let a strategy play a whole episode under hard
+  guardrails (see below); prints the result JSON.
+
+## Safe autopilot
+
+A strategy is `choose(observe, legal_actions) -> action`. Built-ins:
+`greedy` (1-step lookahead on a copy of the state), `bfs` (shortest
+plan to a won/done state, bounded node budget), `random` (seeded
+baseline). A custom file with `choose()` loads via `--strategy-file`.
+The engine enforces, for every strategy: hard step/time budgets,
+stall detection (observation unchanged `--stall-limit` times in a
+row -> stop), illegal-action abort (the action is never sent to
+the game), and exception containment (partial transcript saved,
+non-zero exit, no corrupt state). `--dry-run` simulates the whole
+episode without saving a session. A finished episode is settled
+by replay: the result's `verified` is true only when a fresh
+replay reproduces it. Result JSON: `{strategy, seed, steps,
+score, done, stop_reason, verified}` with `stop_reason` one of
+`done | target_reached | step_budget | time_budget | stall |`
+`illegal_action | error`.
 
 ## Conventions
 

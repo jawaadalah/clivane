@@ -56,5 +56,21 @@
   "--actions",
   "down,down,down,right,up,right,right,right",
   "--json"
+ ],
+ [
+  "autopilot",
+  "--strategy",
+  "greedy",
+  "--seed",
+  "7",
+  "--json"
+ ],
+ [
+  "autopilot",
+  "--strategy",
+  "bfs",
+  "--seed",
+  "7",
+  "--json"
  ]
 ]

@@ -6,7 +6,7 @@
       ],
       "exit_code": 0,
       "stderr_empty": true,
-      "stdout": "usage: gemgrid-game-cli [-h] {new,observe,actions,act,status,replay} ...\n\nEpisode CLI for gemgrid_game\n\npositional arguments:\n  {new,observe,actions,act,status,replay}\n    new                 start a new episode\n    observe             observe the current state\n    actions             list legal actions\n    act                 apply one action\n    status              session summary\n    replay              replay actions from a seed and verify\n\noptions:\n  -h, --help            show this help message and exit"
+      "stdout": "usage: gemgrid-game-cli [-h]\n                        {new,observe,actions,act,status,replay,autopilot} ...\n\nEpisode CLI for gemgrid_game\n\npositional arguments:\n  {new,observe,actions,act,status,replay,autopilot}\n    new                 start a new episode\n    observe             observe the current state\n    actions             list legal actions\n    act                 apply one action\n    status              session summary\n    replay              replay actions from a seed and verify\n    autopilot           let a strategy play an episode, safely\n\noptions:\n  -h, --help            show this help message and exit"
     },
     {
       "argv": [
@@ -25,6 +25,15 @@
       "exit_code": 0,
       "stderr_empty": true,
       "stdout": "usage: gemgrid-game-cli actions [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "autopilot",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-cli autopilot [-h] [--strategy {greedy,bfs,random}]\n                                  [--strategy-file STRATEGY_FILE]\n                                  [--seed SEED] [--max-steps MAX_STEPS]\n                                  [--max-seconds MAX_SECONDS]\n                                  [--target-score TARGET_SCORE]\n                                  [--stall-limit STALL_LIMIT]\n                                  [--bfs-max-nodes BFS_MAX_NODES] [--dry-run]\n                                  [--json]\n\noptions:\n  -h, --help            show this help message and exit\n  --strategy {greedy,bfs,random}\n  --strategy-file STRATEGY_FILE\n                        Python file defining choose(observe, legal_actions)\n  --seed SEED\n  --max-steps MAX_STEPS\n  --max-seconds MAX_SECONDS\n  --target-score TARGET_SCORE\n  --stall-limit STALL_LIMIT\n  --bfs-max-nodes BFS_MAX_NODES\n  --dry-run             simulate only: no session saved, no finish\n  --json"
     },
     {
       "argv": [
@@ -174,6 +183,32 @@
       "exit_code": 0,
       "stderr_empty": true,
       "stdout": "{\n  \"command\": \"replay\",\n  \"result\": {\n    \"final_observe\": {\n      \"done\": true,\n      \"gems\": [],\n      \"moves_left\": 32,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        4,\n        2\n      ],\n      \"score\": 30,\n      \"steps\": 8,\n      \"won\": true\n    },\n    \"seed\": 7,\n    \"steps\": 8,\n    \"total_reward\": 30,\n    \"verified\": true\n  }\n}"
+    },
+    {
+      "argv": [
+        "autopilot",
+        "--strategy",
+        "greedy",
+        "--seed",
+        "7",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"done\": true,\n  \"score\": 30,\n  \"seed\": 7,\n  \"steps\": 8,\n  \"stop_reason\": \"done\",\n  \"strategy\": \"greedy\",\n  \"verified\": true\n}"
+    },
+    {
+      "argv": [
+        "autopilot",
+        "--strategy",
+        "bfs",
+        "--seed",
+        "7",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"done\": true,\n  \"score\": 30,\n  \"seed\": 7,\n  \"steps\": 8,\n  \"stop_reason\": \"done\",\n  \"strategy\": \"bfs\",\n  \"verified\": true\n}"
     }
   ],
   "package": "gemgrid-game-cli",

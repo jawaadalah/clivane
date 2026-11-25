@@ -2,6 +2,7 @@
   "commands": [
     "act",
     "actions",
+    "autopilot",
     "new",
     "observe",
     "replay",
