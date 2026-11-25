@@ -10,4 +10,6 @@ Silver = smoke tests pass, Gold = Trace-Seal verified.
 | mirror-ls | mirror | 0 | Gold |
 | sample-app-cli | forge | 5 | Gold |
 | sample-app-server | serve | 5 | Gold |
+| starforge-live | live | 7 | Gold |
+| starforge-shadow-cli | game | 7 | Gold |
 | todoline-cli | openapi | 4 | Gold |

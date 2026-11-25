@@ -12,6 +12,7 @@
       ],
       "commands": 7,
       "dir": "gemgrid-arena",
+      "kind": "deterministic",
       "name": "gemgrid-game-arena",
       "path": "game-fullstack",
       "tier": "Gold"
@@ -28,6 +29,7 @@
       ],
       "commands": 7,
       "dir": "gemgrid-cli",
+      "kind": "deterministic",
       "name": "gemgrid-game-cli",
       "path": "game",
       "tier": "Gold"
@@ -36,6 +38,7 @@
       "command_list": [],
       "commands": 0,
       "dir": "mirror-ls",
+      "kind": "deterministic",
       "name": "mirror-ls",
       "path": "mirror",
       "tier": "Gold"
@@ -50,6 +53,7 @@
       ],
       "commands": 5,
       "dir": "notebox-cli",
+      "kind": "deterministic",
       "name": "sample-app-cli",
       "path": "forge",
       "tier": "Gold"
@@ -64,8 +68,43 @@
       ],
       "commands": 5,
       "dir": "notebox-server",
+      "kind": "deterministic",
       "name": "sample-app-server",
       "path": "serve",
+      "tier": "Gold"
+    },
+    {
+      "command_list": [
+        "actions",
+        "act",
+        "live-autopilot",
+        "live-observe",
+        "observe",
+        "shadow-check",
+        "status"
+      ],
+      "commands": 7,
+      "dir": "starforge-live",
+      "kind": "live",
+      "name": "starforge-live",
+      "path": "live",
+      "tier": "Gold"
+    },
+    {
+      "command_list": [
+        "act",
+        "actions",
+        "autopilot",
+        "new",
+        "observe",
+        "replay",
+        "status"
+      ],
+      "commands": 7,
+      "dir": "starforge-live/shadow",
+      "kind": "deterministic",
+      "name": "starforge-shadow-cli",
+      "path": "game",
       "tier": "Gold"
     },
     {
@@ -77,6 +116,7 @@
       ],
       "commands": 4,
       "dir": "todoline-cli",
+      "kind": "deterministic",
       "name": "todoline-cli",
       "path": "openapi",
       "tier": "Gold"
