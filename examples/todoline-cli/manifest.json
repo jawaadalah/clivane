@@ -1,0 +1,13 @@
+{
+  "commands": [
+    "create-todo",
+    "delete-todo",
+    "get-todo",
+    "list-todos"
+  ],
+  "entry": "todoline_cli.py",
+  "name": "todoline-cli",
+  "path": "openapi",
+  "source": "todoline.openapi.json",
+  "tier": "Bronze"
+}

@@ -1,0 +1,50 @@
+{
+  "calls": [
+    {
+      "argv": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: todoline-cli [-h] [--base-url BASE_URL]\n                    {create-todo,delete-todo,get-todo,list-todos} ...\n\nAPI CLI: Todoline API\n\npositional arguments:\n  {create-todo,delete-todo,get-todo,list-todos}\n    create-todo         Create a todo (JSON body via --body)\n    delete-todo         Delete one todo by id\n    get-todo            Fetch one todo by id\n    list-todos          List todos, optionally filtered by completion state\n\noptions:\n  -h, --help            show this help message and exit\n  --base-url BASE_URL"
+    },
+    {
+      "argv": [
+        "create-todo",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: todoline-cli create-todo [-h] [--body BODY] [--json]\n\noptions:\n  -h, --help   show this help message and exit\n  --body BODY  JSON request body\n  --json       structured envelope"
+    },
+    {
+      "argv": [
+        "delete-todo",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: todoline-cli delete-todo [-h] --todo-id TODO_ID [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --todo-id TODO_ID  path (integer)\n  --json             structured envelope"
+    },
+    {
+      "argv": [
+        "get-todo",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: todoline-cli get-todo [-h] --todo-id TODO_ID [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --todo-id TODO_ID  path (integer)\n  --json             structured envelope"
+    },
+    {
+      "argv": [
+        "list-todos",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: todoline-cli list-todos [-h] [--done DONE] [--json]\n\noptions:\n  -h, --help   show this help message and exit\n  --done DONE  query (string)\n  --json       structured envelope"
+    }
+  ],
+  "package": "todoline-cli",
+  "seal_version": 1
+}
