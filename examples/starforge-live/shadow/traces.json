@@ -1,0 +1,140 @@
+{
+  "calls": [
+    {
+      "argv": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-shadow-cli [-h]\n                            {new,observe,actions,act,status,replay,autopilot}\n                            ...\n\nEpisode CLI for starforge_shadow\n\npositional arguments:\n  {new,observe,actions,act,status,replay,autopilot}\n    new                 start a new episode\n    observe             observe the current state\n    actions             list legal actions\n    act                 apply one action\n    status              session summary\n    replay              replay actions from a seed and verify\n    autopilot           let a strategy play an episode, safely\n\noptions:\n  -h, --help            show this help message and exit"
+    },
+    {
+      "argv": [
+        "act",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-shadow-cli act [-h] [--json] action\n\npositional arguments:\n  action\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "actions",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-shadow-cli actions [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "autopilot",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-shadow-cli autopilot [-h] [--strategy {greedy,bfs,random}]\n                                      [--strategy-file STRATEGY_FILE]\n                                      [--seed SEED] [--max-steps MAX_STEPS]\n                                      [--max-seconds MAX_SECONDS]\n                                      [--target-score TARGET_SCORE]\n                                      [--stall-limit STALL_LIMIT]\n                                      [--bfs-max-nodes BFS_MAX_NODES]\n                                      [--dry-run] [--json]\n\noptions:\n  -h, --help            show this help message and exit\n  --strategy {greedy,bfs,random}\n  --strategy-file STRATEGY_FILE\n                        Python file defining choose(observe, legal_actions)\n  --seed SEED\n  --max-steps MAX_STEPS\n  --max-seconds MAX_SECONDS\n  --target-score TARGET_SCORE\n  --stall-limit STALL_LIMIT\n  --bfs-max-nodes BFS_MAX_NODES\n  --dry-run             simulate only: no session saved, no finish\n  --json"
+    },
+    {
+      "argv": [
+        "new",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-shadow-cli new [-h] [--seed SEED] [--json]\n\noptions:\n  -h, --help   show this help message and exit\n  --seed SEED\n  --json"
+    },
+    {
+      "argv": [
+        "observe",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-shadow-cli observe [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "replay",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-shadow-cli replay [-h] --seed SEED --actions ACTIONS [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --seed SEED\n  --actions ACTIONS  comma-separated actions\n  --json"
+    },
+    {
+      "argv": [
+        "status",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-shadow-cli status [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "new",
+        "--seed",
+        "0",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"new\",\n  \"result\": {\n    \"observe\": {\n      \"done\": false,\n      \"energy\": 20,\n      \"ore\": 0,\n      \"raids_done\": 0,\n      \"ship_hp\": 100,\n      \"stars\": 0\n    },\n    \"seed\": 0\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "mine",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"mine\"\n    },\n    \"observe\": {\n      \"done\": false,\n      \"energy\": 17,\n      \"ore\": 2,\n      \"raids_done\": 0,\n      \"ship_hp\": 100,\n      \"stars\": 0\n    },\n    \"reward\": 2\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "trade",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"trade\"\n    },\n    \"observe\": {\n      \"done\": false,\n      \"energy\": 16,\n      \"ore\": 0,\n      \"raids_done\": 0,\n      \"ship_hp\": 100,\n      \"stars\": 5\n    },\n    \"reward\": 5\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "mine",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"mine\"\n    },\n    \"observe\": {\n      \"done\": false,\n      \"energy\": 13,\n      \"ore\": 2,\n      \"raids_done\": 0,\n      \"ship_hp\": 100,\n      \"stars\": 5\n    },\n    \"reward\": 2\n  }\n}"
+    },
+    {
+      "argv": [
+        "status",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"status\",\n  \"result\": {\n    \"done\": false,\n    \"last_reward\": 2,\n    \"observe\": {\n      \"done\": false,\n      \"energy\": 13,\n      \"ore\": 2,\n      \"raids_done\": 0,\n      \"ship_hp\": 100,\n      \"stars\": 5\n    },\n    \"seed\": 0,\n    \"steps\": 3\n  }\n}"
+    },
+    {
+      "argv": [
+        "replay",
+        "--seed",
+        "0",
+        "--actions",
+        "mine,trade,mine",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"replay\",\n  \"result\": {\n    \"final_observe\": {\n      \"done\": false,\n      \"energy\": 13,\n      \"ore\": 2,\n      \"raids_done\": 0,\n      \"ship_hp\": 100,\n      \"stars\": 5\n    },\n    \"seed\": 0,\n    \"steps\": 3,\n    \"total_reward\": 9,\n    \"verified\": true\n  }\n}"
+    }
+  ],
+  "package": "starforge-shadow-cli",
+  "seal_version": 1
+}

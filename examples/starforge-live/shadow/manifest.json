@@ -1,0 +1,16 @@
+{
+  "commands": [
+    "act",
+    "actions",
+    "autopilot",
+    "new",
+    "observe",
+    "replay",
+    "status"
+  ],
+  "entry": "starforge_shadow_cli.py",
+  "name": "starforge-shadow-cli",
+  "path": "game",
+  "source": "starforge_shadow.py",
+  "tier": "Bronze"
+}

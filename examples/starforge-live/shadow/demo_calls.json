@@ -1,0 +1,1 @@
+[["new","--seed","0","--json"],["act","mine","--json"],["act","trade","--json"],["act","mine","--json"],["status","--json"],["replay","--seed","0","--actions","mine,trade,mine","--json"]]
