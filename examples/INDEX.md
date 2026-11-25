@@ -5,6 +5,8 @@ Silver = smoke tests pass, Gold = Trace-Seal verified.
 
 | Package | Path | Commands | Tier |
 |---|---|---|---|
+| gemgrid-game-cli | game | 6 | Gold |
 | mirror-ls | mirror | 0 | Gold |
 | sample-app-cli | forge | 5 | Gold |
+| sample-app-server | serve | 5 | Gold |
 | todoline-cli | openapi | 4 | Gold |

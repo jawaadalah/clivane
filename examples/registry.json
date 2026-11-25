@@ -1,6 +1,21 @@
 {
   "packages": [
     {
+      "command_list": [
+        "act",
+        "actions",
+        "new",
+        "observe",
+        "replay",
+        "status"
+      ],
+      "commands": 6,
+      "dir": "gemgrid-cli",
+      "name": "gemgrid-game-cli",
+      "path": "game",
+      "tier": "Gold"
+    },
+    {
       "command_list": [],
       "commands": 0,
       "dir": "mirror-ls",
@@ -20,6 +35,20 @@
       "dir": "notebox-cli",
       "name": "sample-app-cli",
       "path": "forge",
+      "tier": "Gold"
+    },
+    {
+      "command_list": [
+        "count-notes",
+        "create-note",
+        "delete-note",
+        "list-notes",
+        "search-notes"
+      ],
+      "commands": 5,
+      "dir": "notebox-server",
+      "name": "sample-app-server",
+      "path": "serve",
       "tier": "Gold"
     },
     {
