@@ -1,0 +1,15 @@
+{
+  "commands": [
+    "act",
+    "actions",
+    "new",
+    "observe",
+    "replay",
+    "status"
+  ],
+  "entry": "gemgrid_game_cli.py",
+  "name": "gemgrid-game-cli",
+  "path": "game",
+  "source": "gemgrid_game.py",
+  "tier": "Bronze"
+}

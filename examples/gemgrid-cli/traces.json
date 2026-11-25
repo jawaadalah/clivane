@@ -1,0 +1,181 @@
+{
+  "calls": [
+    {
+      "argv": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-cli [-h] {new,observe,actions,act,status,replay} ...\n\nEpisode CLI for gemgrid_game\n\npositional arguments:\n  {new,observe,actions,act,status,replay}\n    new                 start a new episode\n    observe             observe the current state\n    actions             list legal actions\n    act                 apply one action\n    status              session summary\n    replay              replay actions from a seed and verify\n\noptions:\n  -h, --help            show this help message and exit"
+    },
+    {
+      "argv": [
+        "act",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-cli act [-h] [--json] action\n\npositional arguments:\n  action\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "actions",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-cli actions [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "new",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-cli new [-h] [--seed SEED] [--json]\n\noptions:\n  -h, --help   show this help message and exit\n  --seed SEED\n  --json"
+    },
+    {
+      "argv": [
+        "observe",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-cli observe [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "replay",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-cli replay [-h] --seed SEED --actions ACTIONS [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --seed SEED\n  --actions ACTIONS  comma-separated actions\n  --json"
+    },
+    {
+      "argv": [
+        "status",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-cli status [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "new",
+        "--seed",
+        "7",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"new\",\n  \"result\": {\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          0,\n          2\n        ],\n        [\n          0,\n          3\n        ],\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 40,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        0\n      ],\n      \"score\": 0,\n      \"steps\": 0,\n      \"won\": false\n    },\n    \"seed\": 7\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "down",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 0\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          0,\n          2\n        ],\n        [\n          0,\n          3\n        ],\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 39,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        1\n      ],\n      \"score\": 0,\n      \"steps\": 1,\n      \"won\": false\n    },\n    \"reward\": 0\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "down",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"gem\",\n      \"score\": 10\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          0,\n          3\n        ],\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 38,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        2\n      ],\n      \"score\": 10,\n      \"steps\": 2,\n      \"won\": false\n    },\n    \"reward\": 10\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "down",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"gem\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 37,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        3\n      ],\n      \"score\": 20,\n      \"steps\": 3,\n      \"won\": false\n    },\n    \"reward\": 10\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "right",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 36,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        1,\n        3\n      ],\n      \"score\": 20,\n      \"steps\": 4,\n      \"won\": false\n    },\n    \"reward\": 0\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "up",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 35,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        1,\n        2\n      ],\n      \"score\": 20,\n      \"steps\": 5,\n      \"won\": false\n    },\n    \"reward\": 0\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "right",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 34,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        2,\n        2\n      ],\n      \"score\": 20,\n      \"steps\": 6,\n      \"won\": false\n    },\n    \"reward\": 0\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "right",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": false,\n    \"info\": {\n      \"event\": \"move\",\n      \"score\": 20\n    },\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 33,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        3,\n        2\n      ],\n      \"score\": 20,\n      \"steps\": 7,\n      \"won\": false\n    },\n    \"reward\": 0\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "right",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"done\": true,\n    \"info\": {\n      \"event\": \"win\",\n      \"score\": 30\n    },\n    \"observe\": {\n      \"done\": true,\n      \"gems\": [],\n      \"moves_left\": 32,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        4,\n        2\n      ],\n      \"score\": 30,\n      \"steps\": 8,\n      \"won\": true\n    },\n    \"reward\": 10\n  }\n}"
+    },
+    {
+      "argv": [
+        "status",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"status\",\n  \"result\": {\n    \"done\": true,\n    \"last_reward\": 10,\n    \"observe\": {\n      \"done\": true,\n      \"gems\": [],\n      \"moves_left\": 32,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        4,\n        2\n      ],\n      \"score\": 30,\n      \"steps\": 8,\n      \"won\": true\n    },\n    \"seed\": 7,\n    \"steps\": 8\n  }\n}"
+    },
+    {
+      "argv": [
+        "replay",
+        "--seed",
+        "7",
+        "--actions",
+        "down,down,down,right,up,right,right,right",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"replay\",\n  \"result\": {\n    \"final_observe\": {\n      \"done\": true,\n      \"gems\": [],\n      \"moves_left\": 32,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        4,\n        2\n      ],\n      \"score\": 30,\n      \"steps\": 8,\n      \"won\": true\n    },\n    \"seed\": 7,\n    \"steps\": 8,\n    \"total_reward\": 30,\n    \"verified\": true\n  }\n}"
+    }
+  ],
+  "package": "gemgrid-game-cli",
+  "seal_version": 1
+}
