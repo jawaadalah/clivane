@@ -6,7 +6,7 @@
       ],
       "exit_code": 0,
       "stderr_empty": true,
-      "stdout": "usage: gemgrid-game-arena [-h] [--remote REMOTE]\n                          {new,observe,actions,finish,act,leaderboard} ...\n\nRemote client for the gemgrid_game arena\n\npositional arguments:\n  {new,observe,actions,finish,act,leaderboard}\n    new                 create a session on the server\n    observe             observe a session\n    actions             legal actions of a session\n    finish              verify by replay and record the score\n    act                 apply one action to a session\n    leaderboard         verified scores, best first\n\noptions:\n  -h, --help            show this help message and exit\n  --remote REMOTE       base URL of the arena server"
+      "stdout": "usage: gemgrid-game-arena [-h] [--remote REMOTE]\n                          {new,observe,actions,finish,act,leaderboard,autopilot}\n                          ...\n\nRemote client for the gemgrid_game arena\n\npositional arguments:\n  {new,observe,actions,finish,act,leaderboard,autopilot}\n    new                 create a session on the server\n    observe             observe a session\n    actions             legal actions of a session\n    finish              verify by replay and record the score\n    act                 apply one action to a session\n    leaderboard         verified scores, best first\n    autopilot           let a strategy play an episode, safely\n\noptions:\n  -h, --help            show this help message and exit\n  --remote REMOTE       base URL of the arena server"
     },
     {
       "argv": [
@@ -25,6 +25,15 @@
       "exit_code": 0,
       "stderr_empty": true,
       "stdout": "usage: gemgrid-game-arena actions [-h] --session SESSION [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --session SESSION\n  --json"
+    },
+    {
+      "argv": [
+        "autopilot",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: gemgrid-game-arena autopilot [-h] [--strategy {greedy,bfs,random}]\n                                    [--strategy-file STRATEGY_FILE]\n                                    [--seed SEED] [--max-steps MAX_STEPS]\n                                    [--max-seconds MAX_SECONDS]\n                                    [--target-score TARGET_SCORE]\n                                    [--stall-limit STALL_LIMIT]\n                                    [--bfs-max-nodes BFS_MAX_NODES]\n                                    [--dry-run] [--json] [--player PLAYER]\n\noptions:\n  -h, --help            show this help message and exit\n  --strategy {greedy,bfs,random}\n  --strategy-file STRATEGY_FILE\n                        Python file defining choose(observe, legal_actions)\n  --seed SEED\n  --max-steps MAX_STEPS\n  --max-seconds MAX_SECONDS\n  --target-score TARGET_SCORE\n  --stall-limit STALL_LIMIT\n  --bfs-max-nodes BFS_MAX_NODES\n  --dry-run             simulate only: no session saved, no finish\n  --json\n  --player PLAYER       leaderboard name (default: autopilot-<strategy>)"
     },
     {
       "argv": [
@@ -73,7 +82,7 @@
       ],
       "exit_code": 0,
       "stderr_empty": true,
-      "stdout": "{\n  \"command\": \"new\",\n  \"result\": {\n    \"actions\": [\n      \"down\"\n    ],\n    \"done\": false,\n    \"finished\": false,\n    \"id\": \"s1\",\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          0,\n          2\n        ],\n        [\n          0,\n          3\n        ],\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 40,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        0\n      ],\n      \"score\": 0,\n      \"steps\": 0,\n      \"won\": false\n    },\n    \"player\": \"agent\",\n    \"seed\": 7,\n    \"steps\": 0\n  }\n}"
+      "stdout": "{\n  \"command\": \"new\",\n  \"result\": {\n    \"aborted\": false,\n    \"actions\": [\n      \"down\"\n    ],\n    \"done\": false,\n    \"finished\": false,\n    \"id\": \"s1\",\n    \"max_steps\": null,\n    \"observe\": {\n      \"done\": false,\n      \"gems\": [\n        [\n          0,\n          2\n        ],\n        [\n          0,\n          3\n        ],\n        [\n          4,\n          2\n        ]\n      ],\n      \"moves_left\": 40,\n      \"obstacles\": [\n        [\n          1,\n          0\n        ],\n        [\n          2,\n          1\n        ],\n        [\n          2,\n          3\n        ],\n        [\n          4,\n          1\n        ]\n      ],\n      \"player\": [\n        0,\n        0\n      ],\n      \"score\": 0,\n      \"steps\": 0,\n      \"won\": false\n    },\n    \"player\": \"agent\",\n    \"seed\": 7,\n    \"steps\": 0\n  }\n}"
     },
     {
       "argv": [
@@ -190,6 +199,41 @@
       "exit_code": 0,
       "stderr_empty": true,
       "stdout": "{\n  \"command\": \"leaderboard\",\n  \"result\": {\n    \"scores\": [\n      {\n        \"actions\": [\n          \"down\",\n          \"down\",\n          \"down\",\n          \"right\",\n          \"up\",\n          \"right\",\n          \"right\",\n          \"right\"\n        ],\n        \"player\": \"agent\",\n        \"score\": 30,\n        \"seed\": 7,\n        \"steps\": 8,\n        \"verified\": true\n      }\n    ]\n  }\n}"
+    },
+    {
+      "argv": [
+        "autopilot",
+        "--strategy",
+        "greedy",
+        "--seed",
+        "7",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"done\": true,\n  \"score\": 30,\n  \"seed\": 7,\n  \"steps\": 8,\n  \"stop_reason\": \"done\",\n  \"strategy\": \"greedy\",\n  \"verified\": true\n}"
+    },
+    {
+      "argv": [
+        "autopilot",
+        "--strategy",
+        "bfs",
+        "--seed",
+        "7",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"done\": true,\n  \"score\": 30,\n  \"seed\": 7,\n  \"steps\": 8,\n  \"stop_reason\": \"done\",\n  \"strategy\": \"bfs\",\n  \"verified\": true\n}"
+    },
+    {
+      "argv": [
+        "leaderboard",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"leaderboard\",\n  \"result\": {\n    \"scores\": [\n      {\n        \"actions\": [\n          \"down\",\n          \"down\",\n          \"down\",\n          \"right\",\n          \"up\",\n          \"right\",\n          \"right\",\n          \"right\"\n        ],\n        \"player\": \"agent\",\n        \"score\": 30,\n        \"seed\": 7,\n        \"steps\": 8,\n        \"verified\": true\n      },\n      {\n        \"actions\": [\n          \"down\",\n          \"down\",\n          \"down\",\n          \"right\",\n          \"up\",\n          \"right\",\n          \"right\",\n          \"right\"\n        ],\n        \"player\": \"autopilot-greedy\",\n        \"score\": 30,\n        \"seed\": 7,\n        \"steps\": 8,\n        \"verified\": true\n      },\n      {\n        \"actions\": [\n          \"down\",\n          \"down\",\n          \"down\",\n          \"right\",\n          \"up\",\n          \"right\",\n          \"right\",\n          \"right\"\n        ],\n        \"player\": \"autopilot-bfs\",\n        \"score\": 30,\n        \"seed\": 7,\n        \"steps\": 8,\n        \"verified\": true\n      }\n    ]\n  }\n}"
     }
   ],
   "package": "gemgrid-game-arena",

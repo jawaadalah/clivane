@@ -12,6 +12,11 @@ Three layers, one process (stdlib http.server only):
 Binds 127.0.0.1 unless --host/CLIVANE_HOST says otherwise; a non-local
 bind prints a warning. Set --token or CLIVANE_TOKEN to require the
 X-Clivane-Token header on POST endpoints.
+
+Bot guardrails (enforced server-side, whatever the client sends):
+POST /sessions accepts max_steps; an act beyond that budget aborts the
+session (403, and the session stays aborted), and acts are rate-limited
+to 20/second per session (429) - loose for humans, tight for wild loops.
 """
 import argparse
 import importlib
@@ -20,6 +25,7 @@ import json
 import os
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -73,7 +79,8 @@ def replay(seed, actions):
 def public_session(sess):
     return {"id": sess["id"], "seed": sess["seed"], "player": sess["player"],
             "steps": len(sess["actions"]), "done": sess["done"],
-            "finished": sess["finished"],
+            "finished": sess["finished"], "aborted": sess["aborted"],
+            "max_steps": sess["max_steps"],
             "observe": MODULE.observe(sess["state"]),
             "actions": MODULE.legal_actions(sess["state"])}
 
@@ -163,17 +170,25 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["sessions"]:
             seed = payload.get("seed", 0)
             player = payload.get("player", "player")
+            max_steps = payload.get("max_steps")
             if not isinstance(seed, int) or isinstance(seed, bool):
                 self._send(400, {"error": "seed must be an integer"})
                 return
             if not isinstance(player, str) or not player:
                 self._send(400, {"error": "player must be a non-empty string"})
                 return
+            if max_steps is not None and (
+                    not isinstance(max_steps, int)
+                    or isinstance(max_steps, bool) or max_steps <= 0):
+                self._send(400, {"error": "max_steps must be a positive integer"})
+                return
             with LOCK:
                 sid = "s%d" % next(IDS)
                 sess = {"id": sid, "seed": seed, "player": player,
                         "state": MODULE.new_game(seed), "actions": [],
-                        "total_reward": 0, "done": False, "finished": False}
+                        "total_reward": 0, "done": False, "finished": False,
+                        "max_steps": max_steps, "aborted": False,
+                        "act_times": []}
                 SESSIONS[sid] = sess
                 out = public_session(sess)
             self._send(201, out)
@@ -190,6 +205,25 @@ class Handler(BaseHTTPRequestHandler):
                 if sess["done"]:
                     self._send(400, {"error": "episode is done"})
                     return
+                # Server-side guardrails (v1.3.0): a rogue client cannot
+                # run a session without bounds, whatever it sends.
+                if sess["aborted"]:
+                    self._send(403, {"error": "session aborted by the server "
+                                     "(step budget exceeded)"})
+                    return
+                if (sess["max_steps"] is not None
+                        and len(sess["actions"]) >= sess["max_steps"]):
+                    sess["aborted"] = True
+                    self._send(403, {"error": "server-side step budget "
+                                     "exceeded; session aborted"})
+                    return
+                now = time.monotonic()
+                sess["act_times"] = [t for t in sess["act_times"]
+                                     if now - t < 1.0]
+                if len(sess["act_times"]) >= 20:
+                    self._send(429, {"error": "rate limit: over 20 "
+                                     "actions/second on this session"})
+                    return
                 legal = MODULE.legal_actions(sess["state"])
                 if action not in legal:
                     self._send(400, {"error": "illegal action: %r (legal: %s)"
@@ -200,6 +234,7 @@ class Handler(BaseHTTPRequestHandler):
                 sess["actions"].append(action)
                 sess["total_reward"] += reward
                 sess["done"] = bool(done)
+                sess["act_times"].append(time.monotonic())
             self._send(200, {"session": sess["id"],
                              "observe": MODULE.observe(state),
                              "reward": reward, "done": bool(done),

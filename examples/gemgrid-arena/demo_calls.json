@@ -72,5 +72,25 @@
  [
   "leaderboard",
   "--json"
+ ],
+ [
+  "autopilot",
+  "--strategy",
+  "greedy",
+  "--seed",
+  "7",
+  "--json"
+ ],
+ [
+  "autopilot",
+  "--strategy",
+  "bfs",
+  "--seed",
+  "7",
+  "--json"
+ ],
+ [
+  "leaderboard",
+  "--json"
  ]
 ]
