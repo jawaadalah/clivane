@@ -4,12 +4,13 @@
       "command_list": [
         "act",
         "actions",
+        "autopilot",
         "finish",
         "leaderboard",
         "new",
         "observe"
       ],
-      "commands": 6,
+      "commands": 7,
       "dir": "gemgrid-arena",
       "name": "gemgrid-game-arena",
       "path": "game-fullstack",
@@ -19,12 +20,13 @@
       "command_list": [
         "act",
         "actions",
+        "autopilot",
         "new",
         "observe",
         "replay",
         "status"
       ],
-      "commands": 6,
+      "commands": 7,
       "dir": "gemgrid-cli",
       "name": "gemgrid-game-cli",
       "path": "game",
