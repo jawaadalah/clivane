@@ -282,6 +282,163 @@ per discovered run-command (`--args '<json>'`) or operation
 (`--params` / `--body '<json>'`). A server that answers none of the
 probes is rejected with a clear message.
 
+## Path 6 — live (new in v2.0.0: games on someone else's server)
+
+Use when the target is a game whose state and RNG live on a remote
+server — a web game, a Telegram game, a hosted world. The game path's
+load-bearing wall (the seed is ours, so replay can prove a result)
+does not exist here. This path therefore runs on a different contract,
+and its first rule is about language, not code:
+
+**Honest label (non-negotiable).** Everything the live path records —
+CLI output, journal lines, autopilot results, registry entries — is
+labelled `live-recorded`, and `verified` is always `false`. A live
+journal is evidence of what happened; it is never proof that the
+result could be reproduced. Replay-verified claims are reserved for
+the deterministic game path and for shadow simulators. Any wording,
+in code or docs, that blurs this line is a bug.
+
+### The adapter contract
+
+An adapter is a small Python module bridging clivane to the game:
+
+| Function | Signature | Rules |
+|---|---|---|
+| `fetch_state` | `() -> dict` | the current public state, JSON-able |
+| `list_actions` | `(state) -> list[str]` | actions legal in that state |
+| `send_action` | `(action, **kw) -> dict` | performs one action, returns its result dict |
+| `meta` | `() -> dict` (optional) | `{"name", "game", "transport"}` |
+
+Generation validates the contract **statically**: the adapter's AST
+is parsed and its signatures checked; the module is never imported
+and the game server is never contacted. `--probe` is the explicit
+opt-in that loads the adapter and calls `fetch_state()` /
+`list_actions()` once — point it at a mock or staging server, never
+at production unless you mean it. A violating adapter is rejected
+with a named `live contract violation` reason.
+
+Generation emits: the adapter copied in, the live CLI
+(`observe / actions / act / status / shadow-check / live-autopilot /
+live-observe`), `SKILL.md`, `test_smoke.py`, `manifest.json`
+(`path: live`, `kind: live`, `label: live-recorded`), a bundled
+`policy.json`, and the shadow simulator when `--shadow` is given.
+
+### Session journal
+
+Every `act` — manual or autopilot — appends one JSONL line to
+`sessions/live-N.jsonl` next to the CLI: `{type: "act", ts,
+state_before, action, result, state_after}`. A session starts with a
+`session_start` line; an autopilot run ends with a `summary` line
+carrying its `stop_reason`. The journal is the audit trail for a
+server you do not control: it cannot prove the server behaved, but
+it fixes what you sent and what it answered, in order.
+
+### Shadow simulator & divergence check
+
+The shadow is a deterministic model of the live game, written as an
+ordinary game-contract module (`new_game / legal_actions / step /
+observe`, plus an optional `from_observe(obs) -> state` used to start
+mid-game). It has three jobs:
+
+1. **Planning.** Autopilot strategies (greedy/bfs) look ahead in the
+   shadow, never in the live game.
+2. **Dry-run.** `live-autopilot --dry-run` plays the whole episode in
+   the shadow only: `send_action` is never called and nothing is
+   journaled.
+3. **Measurement.** `shadow-check <transcript.jsonl>` replays the
+   transcript's actions in the shadow and compares, field by field,
+   the modelled transitions against the recorded ones: the report
+   carries `match_rate`, per-field matched/mismatched counts and the
+   first mismatches. It is a measurement, reported as-is — a low rate
+   means the model is wrong or the server is less deterministic than
+   assumed, and either fact is useful. It is never a verification,
+   and the report says so (`verified: false`).
+
+### Policy guardrails (fail-closed)
+
+`policy.json` is enforced by the generated CLI **and** the autopilot;
+a refusal happens before anything reaches the adapter:
+
+- `blocked_actions` — never sent, by hand or by bot. There is
+  deliberately **no override**: no flag, env var or argument unblocks
+  an action. Editing the policy file is the only way, and that is a
+  human decision made in the open. (The bundled example blocks
+  `buy-stars`, a fictional real-money action.)
+- `approval_actions` — human-only. The manual CLI may send them (a
+  human is present); the autopilot stops with `needs_human` instead.
+- `budgets.max_actions_per_session` — per autopilot run.
+- `budgets.max_actions_per_hour` — counted from the journal across
+  sessions, so closing and reopening the CLI does not reset it.
+- `budgets.resource_caps` — `{field: max_spend}`; spend is read from
+  the state (`initial - current`), and the next step's cost is
+  estimated on the shadow before the action is sent; a step that
+  would cross the cap stops the run with `budget_resource`.
+- `allowed_hours` — optional `[start, end]` local-time window
+  (wrapping midnight allowed); outside it the autopilot stops with
+  `rate_window`.
+- **Kill-switch** — a file named `STOP` in `sessions/` halts the
+  autopilot at the next step with `kill_switch`.
+
+The autopilot's strategy contract and engine guardrails (step/time
+budgets, stall detection, illegal-action abort, exception
+containment) are the game path's, unchanged; its result adds the
+live stop reasons `budget_actions | budget_resource | blocked |
+needs_human | kill_switch | rate_window`, and its `verified` is
+always `false` with `label: live-recorded`.
+
+### Live observer (read-only)
+
+`live-observe [--port N]` serves one dashboard page (stdlib
+`http.server`, localhost) rendered from the journals: sessions and
+their budget consumption, the shadow report's `match_rate`,
+anomalies (a session whose last three states are identical — a
+suspected stall; three or more consecutive error results; a shadow
+`match_rate` below 0.8), and the ten most recent actions. It is
+read-only by construction: `GET /` is the only route, and every
+other method is refused **405**. There is no action endpoint, no
+form, nothing that can reach the game.
+
+### Conformance & tiers for live packages
+
+A live adapter cannot earn Gold by replay, so it earns it by
+conformance. `clivane live-check <adapter> --mock <mock-server>`
+runs an offline suite against the adapter's **mock** server (the
+mock binds an ephemeral localhost port via `$CLIVANE_PORT` and must
+answer through the adapter):
+
+| Check | What it proves |
+|---|---|
+| `contract` | the static contract validation passes |
+| `state_jsonable` | `fetch_state()` returns a JSON-able dict |
+| `actions_consistent` | `list_actions` is a non-empty `list[str]`, stable across fetches |
+| `journal` | a generated CLI's real act writes a well-formed journal (session_start + shaped act line) |
+| `policy` | a policy-blocked action is refused by the CLI, leaves the state untouched, and stops an autopilot with `blocked` at step 0 |
+| `meta` | `meta()` returns name, game and transport |
+
+Tiers are computed from the per-check evidence recorded in the
+package's `conformance.json` (the stored tier string is never
+trusted): **Gold** = every check; **Silver** = contract + state +
+actions + journal; **Bronze** = contract + state. `clivane registry`
+recomputes live tiers from that evidence, exactly as it recomputes
+Trace-Seal tiers from traces. Live entries carry `kind: "live"` in
+the registry; deterministic entries carry `kind: "deterministic"`.
+
+**Dual-mode packages.** A package may bundle its shadow as a full
+deterministic game package in a subfolder (`manifest.shadow_package`)
+— one game, two faces in one folder: the live face graded by
+conformance, the shadow face Trace-Sealed and replay-verified. The
+registry lists both, each under its own proof system.
+
+### Ethics / scope
+
+The live path exists for games you own, operate, or are explicitly
+allowed to automate. Its guardrails are designed for restraint —
+budgets, windows, a kill-switch, fail-closed blocks on anything
+resembling real-money actions — and there is deliberately no
+unbounded mode and no policy override. Pointing an unguarded bot at
+someone else's game is out of scope, the same line the autopilot
+chapter draws for the deterministic path.
+
 ## Trace-Seal — the proof system
 
 1. Probe set = `--help`, every command's `--help`, plus the argv arrays
@@ -305,13 +462,18 @@ probes is rejected with a clear message.
 | Silver | Bronze + every probe call exits 0 (smoke level).    |
 | Gold   | Silver + a Trace-Seal on file that replays PASS.   |
 
+Live packages follow the conformance ladder instead (see Path 6):
+Bronze = contract + state, Silver = + actions + journal, Gold =
+every check including policy and meta, recomputed from the evidence
+in `conformance.json`.
+
 `clivane registry --dir <parent>` recomputes tiers live (it replays
 seals; it never trusts the tier string stored in a manifest) and writes
 `registry.json` plus a human-readable `INDEX.md` table.
 
 ## Adding a package by hand (checklist)
 
-- [ ] Generate with one of the five paths.
+- [ ] Generate with one of the six paths.
 - [ ] Add `demo_calls.json` exercising the main flows.
 - [ ] `clivane verify <dir>` → SEALED, run again → PASS.
 - [ ] `clivane registry --dir <parent>` shows the tier you expect.

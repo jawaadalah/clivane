@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 notebox.json
+examples/starforge-live/sessions/
+examples/starforge-live/shadow/session.json

@@ -16,8 +16,8 @@
   <img src="https://img.shields.io/badge/LLM-not%20required-brightgreen" alt="no LLM">
   <img src="https://img.shields.io/badge/API%20key-none-brightgreen" alt="no API key">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0">
-  <img src="https://img.shields.io/badge/version-1.3.0-orange" alt="v1.3.0">
-  <img src="https://img.shields.io/badge/selftest-15%2F15%20passing-brightgreen" alt="selftest">
+  <img src="https://img.shields.io/badge/version-2.0.0-orange" alt="v2.0.0">
+  <img src="https://img.shields.io/badge/selftest-21%2F21%20passing-brightgreen" alt="selftest">
 </p>
 
 ---
@@ -32,9 +32,10 @@ because every generated package carries **replayable proof** of how it
 behaves.
 
 Other approaches hand a software package to a large coding agent and let
-it improvise a CLI over many expensive phases. clivane takes five
-**deterministic** paths instead — the same input always produces the
-byte-identical package, in about a second, for free:
+it improvise a CLI over many expensive phases. clivane takes six paths
+instead — five of them **deterministic** (the same input always produces
+the byte-identical package, in about a second, for free), plus a sixth,
+**live**, for games whose state lives on someone else's server:
 
 | Path | Input | What you get |
 |---|---|---|
@@ -43,10 +44,13 @@ byte-identical package, in about a second, for free:
 | **openapi** | an OpenAPI 3 JSON spec | one subcommand per `operationId` |
 | **game** *(new in v1.1.0)* | a game module obeying the game contract | a session episode CLI with replay verification — or, with `--fullstack` *(v1.2.0)*, a complete arena: session server + web UI + remote client + verified leaderboard — plus a **safe autopilot** *(v1.3.0)* that lets bot strategies play whole episodes under hard guardrails |
 | **serve / probe** *(new in v1.1.0)* | a Python module / a live server | an HTTP JSON server + remote client / an endpoint map + generic client |
+| **live** *(new in v2.0.0)* | a live game adapter (`fetch_state` / `list_actions` / `send_action`) | a live CLI with session journals, fail-closed policy guardrails, a shadow simulator + divergence check, a guarded autopilot and a read-only observer — results labelled **live-recorded**, never "verified" |
 
-…and one proof system for all five: **Trace-Seal**, golden traces that
+…and one proof system across all six: **Trace-Seal**, golden traces that
 are recorded once and replayed to verify behaviour, feeding an explicit
-**Bronze / Silver / Gold** quality registry.
+**Bronze / Silver / Gold** quality registry — with an offline
+**conformance suite** grading the live path, whose results cannot be
+replay-verified by construction.
 
 ## Quickstart
 
@@ -55,7 +59,7 @@ No installation, no dependencies — just Python 3.10+:
 ```bash
 git clone https://github.com/jawaadalah/clivane
 cd clivane
-python3 clivane.py selftest        # 15/15 checks, runs in seconds
+python3 clivane.py selftest        # 21/21 checks, runs in seconds
 ```
 
 ### Path 1 — forge a Python module
@@ -161,6 +165,41 @@ CLIVANE_REMOTE=http://127.0.0.1:8799 \
 python3 clivane.py probe http://127.0.0.1:8799 --out /tmp/probed
 ```
 
+### Path 6 — a game that lives on someone else's server (v2.0.0)
+
+Some games keep their state and RNG on a remote server — a web game, a
+Telegram game, a hosted world. There is no seed to replay, so the live
+path makes a different promise: **everything is recorded, nothing is
+over-claimed**. You write a small adapter (`fetch_state()`,
+`list_actions(state)`, `send_action(action)`); generation validates it
+*statically*, so it never touches the real server:
+
+```bash
+# the bundled mock game server (fictional "Starforge") for the demo:
+CLIVANE_PORT=8799 python3 examples/starforge-live/mock_server.py &
+python3 clivane.py live examples/starforge-live/starforge_adapter.py \
+  --out examples/starforge-live \
+  --shadow examples/starforge-live/starforge_shadow.py \
+  --policy examples/starforge-live/policy.json
+cd examples/starforge-live
+CLIVANE_REMOTE=http://127.0.0.1:8799 \
+  python3 starforge_live.py act mine --json     # journaled, live-recorded
+CLIVANE_REMOTE=http://127.0.0.1:8799 \
+  python3 starforge_live.py act buy-stars --json
+# -> refused by policy.json (fail-closed; there is no override flag)
+CLIVANE_REMOTE=http://127.0.0.1:8799 \
+  python3 starforge_live.py shadow-check transcript.jsonl --json
+# -> match_rate 1.0 on the bundled controlled transcript — a
+#    measurement against the shadow model, reported as-is
+printf 'def choose(observe, legal_actions):\n    return "mine"\n' > /tmp/always_mine.py
+CLIVANE_REMOTE=http://127.0.0.1:8799 \
+  python3 starforge_live.py live-autopilot --strategy-file /tmp/always_mine.py
+# -> stops "budget_resource" after 4 mines: the policy caps total
+#    energy spend per session, and the ship is never drained dry
+python3 clivane.py live-check examples/starforge-live/starforge_adapter.py \
+  --mock examples/starforge-live/mock_server.py   # conformance: Gold
+```
+
 ### Prove it — Trace-Seal + registry
 
 ```bash
@@ -169,7 +208,7 @@ python3 clivane.py verify examples/notebox-cli   # every later run: PASS / FAIL
 python3 clivane.py registry --dir examples       # tiers for every package
 ```
 
-## The five paths in detail
+## The six paths in detail
 
 ### forge — static analysis, not vibes
 
@@ -248,6 +287,59 @@ starts the generated server on an ephemeral port inside a fresh copy
 and replays the client calls against it — real HTTP traffic, stable
 traces.
 
+### live — games on someone else's server, honestly labelled
+
+The deterministic game path rests on one wall: the seed is ours, so a
+replay can *prove* a result. Live games knock that wall down — state
+and RNG belong to a remote server — so the live path is built on a
+different contract, and it says so everywhere:
+
+- **Honest label.** Every output, journal line and registry entry on
+  this path is labelled `live-recorded`, and `verified` is always
+  `false`. A journal is evidence of what happened, never proof it
+  could be reproduced.
+- **Adapter core.** An adapter is three functions —
+  `fetch_state()`, `list_actions(state)`, `send_action(action)` —
+  plus an optional `meta()`. Generation validates the contract
+  *statically* (AST signatures, nothing imported, nothing called), so
+  generating a package never touches the real game; `--probe` opts
+  into one live probe against a mock or staging server.
+- **Session journal.** Every `act` appends a JSONL line
+  (`ts`, `state_before`, `action`, `result`, `state_after`) to
+  `sessions/live-N.jsonl` — the audit trail for a server you do not
+  control.
+- **Shadow simulator.** A deterministic model of the live game,
+  written as an ordinary game-contract module, bundled with the
+  package. Strategies are planned and dry-run against it, and
+  `shadow-check <transcript>` replays a live transcript in the model
+  and reports the divergence — `match_rate`, mismatched fields —
+  exactly as measured. The bundled Starforge transcript scores 1.0
+  (a controlled fixture: the mock's seed is chosen so its early rolls
+  land on the model's modal values); a real game's score will be
+  lower, and that number *is* the information.
+- **Policy guardrails.** `policy.json` is enforced fail-closed by the
+  CLI and the autopilot alike: `blocked_actions` are never sent
+  (there is no override flag), `approval_actions` stop the autopilot
+  with `needs_human`, budgets cap actions per session and per hour
+  (counted from the journal) and resource spend read from the state
+  (`budget_resource`), an `allowed_hours` window and a `STOP` file
+  in `sessions/` act as schedule gate and kill-switch.
+- **Read-only observer.** `live-observe` serves one dashboard page —
+  sessions, budget consumption, anomalies (stalls, error streaks, a
+  low shadow match rate), recent actions. GET only; every other
+  method is refused 405. There is no action endpoint at all.
+- **Conformance, not replay.** `clivane live-check <adapter> --mock
+  <mock-server>` grades an adapter offline: contract, JSON-able
+  state, consistent actions, a correctly written journal, policy
+  enforcement. Gold requires every check; the tier is recomputed
+  from the recorded per-check evidence, never from a stored string.
+
+The bundled example is dual-mode: `examples/starforge-live/` holds
+the live package (Gold by conformance) and, in its `shadow/`
+subfolder, the same game as a deterministic game package (Gold by
+Trace-Seal) — one game, two faces, two proof systems that never
+pretend to be each other.
+
 ## Trace-Seal & quality tiers
 
 Generated code is easy; *trusted* generated code is the hard part.
@@ -266,9 +358,13 @@ The registry turns that evidence into an explicit quality tier:
 | **Silver** | Bronze + all probe calls exit 0 (smoke level) |
 | **Gold** | Silver + a Trace-Seal on file that replays **PASS** |
 
-Tiers are **recomputed live** by `clivane registry` — the tier string in
-a manifest is never trusted. See `examples/INDEX.md` for a live table:
-all six bundled examples are Gold.
+Live packages earn tiers from the **conformance suite** instead
+(contract + state + journal for Silver, every check including policy
+and meta for Gold), recomputed from the recorded evidence in
+`conformance.json`. Tiers are **recomputed live** by
+`clivane registry` — the tier string in a manifest is never trusted.
+See `examples/INDEX.md` for a live table: all eight bundled examples
+are Gold.
 
 ## Included examples
 
@@ -280,6 +376,8 @@ all six bundled examples are Gold.
 | `gemgrid-game-cli` | game | `examples/gemgrid_game.py` ("GemGrid") | new, observe, actions, act, status, replay | Gold |
 | `gemgrid-game-arena` | game-fullstack | `examples/gemgrid_game.py` ("GemGrid") | arena server + web UI + remote client: new, observe, actions, act, finish, leaderboard | Gold |
 | `sample-app-server` | serve | `examples/sample_app.py` ("notebox") | the 5 notebox commands, over HTTP | Gold |
+| `starforge-live` | live | `examples/starforge-live/starforge_adapter.py` ("Starforge", mock server included) | observe, actions, act, status, shadow-check, live-autopilot, live-observe | Gold (conformance) |
+| `starforge-shadow-cli` | game | `examples/starforge-live/starforge_shadow.py` (the shadow model, as a game package) | new, observe, actions, act, status, replay, autopilot | Gold |
 
 `notebox` keeps its state in a JSON file and is deliberately
 timestamp-free, which is what makes its golden trace stable — a good
@@ -300,6 +398,7 @@ by CLI-Anything):
 | Backend required | only what the target itself needs | the real app must be installed |
 | GUI desktop apps | via mirror (if they ship any CLI) or forge (Python cores) | **strongest case — deep GUI mapping** |
 | Games / episodic environments | **game contract -> episode CLI + replay; `--fullstack` arena with web UI + verified leaderboard** | not addressed |
+| Live-server games (state/RNG not yours) | **live path: adapter + journal + shadow divergence + policy guardrails, honestly labelled live-recorded** | not addressed |
 | Remote / HTTP access | **serve (server+client) and probe (introspect live servers)** | local processes only |
 | Proof of behaviour | **Trace-Seal golden traces + tiers** | test suites written per project |
 | Package size | 1 generated file + SKILL.md | full package tree per app |
@@ -313,7 +412,7 @@ Python modules, existing CLIs, and HTTP APIs **today**, with proof.
 ```
 clivane/
 ├── clivane.py          # the whole tool (stdlib only)
-├── selftest.py         # 12-check self-test suite
+├── selftest.py         # 21-check self-test suite
 ├── SOP.md              # the methodology — source of truth
 ├── examples/
 │   ├── sample_app.py           # "notebox", the forge + serve demo target
@@ -325,6 +424,9 @@ clivane/
 │   ├── gemgrid-cli/            # game package (Gold, episode sealed)
 │   ├── gemgrid-arena/          # fullstack arena: server + web UI + client (Gold)
 │   ├── notebox-server/         # server + client package (Gold)
+│   ├── starforge-live/         # live package (Gold by conformance):
+│   │   │                       #   mock server + adapter + policy + journal demo
+│   │   └── shadow/             #   the same game, deterministic (Gold by Trace-Seal)
 │   ├── registry.json           # machine-readable registry
 │   └── INDEX.md                # human-readable tier table
 └── assets/logo.png
@@ -341,6 +443,10 @@ clivane game    <game.py>   --out <dir> --fullstack
                                            # game contract -> arena (server + web UI + client)
 clivane serve   <module.py> --out <dir>    # module -> HTTP server + client
 clivane probe   <base_url>  --out <dir>    # live server -> map + client
+clivane live    <adapter.py> --out <dir> [--shadow <sim.py>] [--policy <policy.json>]
+                                           # live game adapter -> live CLI (journal + guardrails)
+clivane live-check <adapter.py> --mock <mock.py> [--package <dir>]
+                                           # conformance suite -> Bronze/Silver/Gold
 clivane verify  <dir> [--record]           # Trace-Seal record / replay
 clivane registry --dir <parent>            # tiers -> registry.json + INDEX.md
 clivane list    <dir>                      # inspect one package
@@ -350,25 +456,31 @@ clivane selftest                           # run the self-test suite
 ## Methodology
 
 Everything above follows one written standard: **[SOP.md](SOP.md)** —
-the five paths, the Trace-Seal protocol, and the tier rules. If the
+the six paths, the Trace-Seal protocol, and the tier rules. If the
 code and the SOP ever disagree, the SOP wins.
 
 ## Bahasa Indonesia (singkat)
 
 clivane mengubah software apa pun menjadi CLI yang siap dipakai AI
-agent, **tanpa LLM dan tanpa API key**. Lima jalur deterministik:
-**forge** (modul Python dianalisis statis via AST menjadi CLI lengkap),
-**mirror** (CLI yang sudah ada dibungkus envelope JSON terstruktur),
-**openapi** (spesifikasi OpenAPI 3 menjadi CLI per operasi), **game**
-(modul game berkontrak menjadi CLI episode dengan replay terverifikasi —
-atau mode `--fullstack`: arena lengkap berisi server sesi, UI web, client
+agent, **tanpa LLM dan tanpa API key**. Enam jalur: **forge** (modul
+Python dianalisis statis via AST menjadi CLI lengkap), **mirror** (CLI
+yang sudah ada dibungkus envelope JSON terstruktur), **openapi**
+(spesifikasi OpenAPI 3 menjadi CLI per operasi), **game** (modul game
+berkontrak menjadi CLI episode dengan replay terverifikasi — atau mode
+`--fullstack`: arena lengkap berisi server sesi, UI web, client
 remote, dan papan skor yang hanya menerima skor hasil replay server),
-dan **server** dua arah — **serve** (modul menjadi server HTTP + client
+**server** dua arah — **serve** (modul menjadi server HTTP + client
 jarak jauh) serta **probe** (introspeksi server yang sedang jalan
-menjadi peta endpoint + client). Setiap paket hasil dibuktikan dengan
-**Trace-Seal** — rekaman golden trace yang diputar ulang untuk
-verifikasi — dan diberi tier kualitas Bronze/Silver/Gold di registry.
-Satu file Python, nol dependensi.
+menjadi peta endpoint + client) — dan **live** *(v2.0.0)* untuk game
+yang state & RNG-nya di server orang lain: adapter kecil menjadi CLI
+live dengan jurnal sesi, pagar policy fail-closed, simulator bayangan
++ ukur divergensi, autopilot terjaga, dan observer baca-saja; semua
+hasilnya berlabel jujur **live-recorded**, tidak pernah diklaim
+terverifikasi. Setiap paket hasil dibuktikan dengan **Trace-Seal** —
+rekaman golden trace yang diputar ulang untuk verifikasi — atau, khusus
+jalur live, uji **conformance** offline melawan mock server; keduanya
+diberi tier kualitas Bronze/Silver/Gold di registry. Satu file Python,
+nol dependensi.
 
 ## License
 

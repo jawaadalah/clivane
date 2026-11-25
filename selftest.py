@@ -11,8 +11,12 @@ game fullstack (arena: UI 200, parallel session isolation, illegal act
 remote client, token), safe autopilot (strategies greedy/bfs/random,
 budgets, target, dry-run; abuse: stall, illegal action, strategy and
 step exceptions; arena autopilot + server-side step budget abort and
-per-session rate limit), and the committed examples registry
-(6 packages, all Gold).
+per-session rate limit), live (adapter contract valid/invalid,
+session journal, policy-blocked acts refused, shadow-check match +
+tamper detection, live autopilot guardrails: resource cap, blocked,
+needs-human, kill-switch, schedule + hourly rate windows, dry-run
+purity; read-only observer 200/405; conformance suite tiers), and
+the committed examples registry (8 packages, all Gold).
 """
 
 import hashlib
@@ -823,20 +827,316 @@ def t_autopilot_arena(tmp):
         proc.wait(timeout=5)
 
 
+SF_DIR = os.path.join(HERE, "examples", "starforge-live")
+SF_ADAPTER = os.path.join(SF_DIR, "starforge_adapter.py")
+SF_SHADOW = os.path.join(SF_DIR, "starforge_shadow.py")
+SF_POLICY = os.path.join(SF_DIR, "policy.json")
+SF_MOCK = os.path.join(SF_DIR, "mock_server.py")
+SF_TRANSCRIPT = os.path.join(SF_DIR, "transcript.jsonl")
+
+LIVE_BAD_MISSING = '''
+def fetch_state():
+    return {"x": 0}
+
+
+def list_actions(state):
+    return ["go"]
+'''
+
+LIVE_BAD_SIGNATURE = '''
+def fetch_state(unexpected):
+    return {"x": 0}
+
+
+def list_actions(state):
+    return ["go"]
+
+
+def send_action(action):
+    return {}
+'''
+
+
+def _live_pkg(tmp, policy=SF_POLICY, name="lp"):
+    out = os.path.join(tmp, name)
+    r = run([CLIVANE, "live", SF_ADAPTER, "--out", out,
+             "--shadow", SF_SHADOW, "--policy", policy])
+    assert r.returncode == 0, r.stderr
+    manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+    return out, os.path.join(out, manifest["entry"])
+
+
+def _live_run(entry, cwd, args, base):
+    env = dict(os.environ)
+    env["CLIVANE_REMOTE"] = base
+    return subprocess.run([sys.executable, entry] + args, cwd=cwd, env=env,
+                          capture_output=True, text=True, timeout=60)
+
+
+def t_live_contract(tmp):
+    out, _entry = _live_pkg(tmp)
+    manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+    assert manifest["path"] == "live" and manifest["kind"] == "live", manifest
+    assert manifest["label"] == "live-recorded", manifest
+    assert manifest["commands"] == ["actions", "act", "live-autopilot",
+                                    "live-observe", "observe",
+                                    "shadow-check", "status"], manifest
+    for rel in (manifest["entry"], "SKILL.md", "test_smoke.py",
+                    "starforge_adapter.py", "starforge_shadow.py",
+                    "policy.json"):
+        assert os.path.isfile(os.path.join(out, rel)), rel
+    skill = open(os.path.join(out, "SKILL.md")).read()
+    assert "live-recorded" in skill and "never" in skill, skill
+    # static validation never imports the adapter: bad ones are rejected
+    for label, source in (("missing", LIVE_BAD_MISSING),
+                          ("signature", LIVE_BAD_SIGNATURE)):
+        bad = _write(tmp, "bad_%s.py" % label, source)
+        r = run([CLIVANE, "live", bad, "--out", os.path.join(tmp, label)])
+        assert r.returncode != 0, label
+        assert "live contract violation" in (r.stderr + r.stdout), \
+            (label, r.stdout, r.stderr)
+
+
+def t_live_journal_policy(tmp):
+    out, entry = _live_pkg(tmp)
+    port = clivane.free_port()
+    base = "http://127.0.0.1:%d" % port
+    proc = _start_server(SF_DIR, port, server_file="mock_server.py")
+    try:
+        r = _live_run(entry, out, ["observe", "--json"], base)
+        assert json.loads(r.stdout)["result"]["energy"] == 20, r.stdout
+        r = _live_run(entry, out, ["act", "mine", "--json"], base)
+        assert r.returncode == 0, r.stderr
+        res = json.loads(r.stdout)["result"]
+        assert res["label"] == "live-recorded" and res["observe"]["ore"] == 2, res
+        # policy-blocked action: refused locally, server never sees it
+        r = _live_run(entry, out, ["act", "buy-stars", "--json"], base)
+        assert r.returncode == 1 and "policy" in r.stderr, (r.returncode, r.stderr)
+        r = _live_run(entry, out, ["observe", "--json"], base)
+        assert json.loads(r.stdout)["result"]["stars"] == 0, r.stdout
+        # status: honest label, never verified, journal counted
+        r = _live_run(entry, out, ["status", "--json"], base)
+        st = json.loads(r.stdout)["result"]
+        assert st["session"] == "live-1" and st["acts"] == 1, st
+        assert st["label"] == "live-recorded" and st["verified"] is False, st
+        # the journal itself: session_start + one act, fully shaped
+        path = os.path.join(out, "sessions", "live-1.jsonl")
+        lines = [json.loads(l) for l in open(path) if l.strip()]
+        assert [l["type"] for l in lines] == ["session_start", "act"], lines
+        act = lines[1]
+        for key in ("ts", "state_before", "action", "result", "state_after"):
+            assert key in act, (key, act)
+        assert act["action"] == "mine" and act["state_after"]["ore"] == 2, act
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def t_live_shadow_check(tmp):
+    # generator-side measurement on the committed controlled transcript
+    report = clivane.shadow_check(SF_SHADOW, SF_TRANSCRIPT)
+    assert report["match_rate"] >= 0.9, report
+    assert report["verified"] is False and report["label"] == "live-recorded", report
+    # tampering with one recorded value is detected as divergence
+    lines = [json.loads(l) for l in open(SF_TRANSCRIPT) if l.strip()]
+    for line in lines:
+        if line.get("type") == "act":
+            line["state_after"]["energy"] -= 1
+            break
+    tampered = os.path.join(tmp, "tampered.jsonl")
+    with open(tampered, "w") as fh:
+        for line in lines:
+            fh.write(json.dumps(line) + "\n")
+    bad = clivane.shadow_check(SF_SHADOW, tampered)
+    assert bad["fields_mismatched"] > 0 and bad["match_rate"] < report["match_rate"], bad
+    # the generated CLI reports the same measurement
+    out, entry = _live_pkg(tmp)
+    r = _live_run(entry, out, ["shadow-check", SF_TRANSCRIPT, "--json"],
+                  "http://127.0.0.1:9")
+    assert r.returncode == 0, r.stderr
+    cli_report = json.loads(r.stdout)["result"]
+    assert cli_report["match_rate"] == report["match_rate"], cli_report
+
+
+def t_live_autopilot_guards(tmp):
+    out, entry = _live_pkg(tmp)
+    port = clivane.free_port()
+    base = "http://127.0.0.1:%d" % port
+    proc = _start_server(SF_DIR, port, server_file="mock_server.py")
+    try:
+        def autopilot(args):
+            r = _live_run(entry, out, ["live-autopilot"] + args, base)
+            return json.loads(r.stdout)
+
+        mine = _write(tmp, "mine.py",
+                      'def choose(observe, legal_actions):\n    return "mine"\n')
+        buy = _write(tmp, "buy.py",
+                     'def choose(observe, legal_actions):\n    return "buy-stars"\n')
+        raid = _write(tmp, "raid.py",
+                      'def choose(observe, legal_actions):\n    return "finish-raid"\n')
+        # resource cap: 4 mines spend exactly the 12-energy cap; the
+        # 5th would exceed it -> budget_resource, ship not drained
+        res = autopilot(["--strategy-file", mine, "--seed", "0"])
+        assert res["stop_reason"] == "budget_resource" and res["steps"] == 4, res
+        assert res["verified"] is False and res["label"] == "live-recorded", res
+        # blocked action: never sent, stops at step 0
+        res = autopilot(["--strategy-file", buy, "--seed", "0"])
+        assert res["stop_reason"] == "blocked" and res["steps"] == 0, res
+        # approval action: human-only, autopilot defers
+        res = autopilot(["--strategy-file", raid, "--seed", "0"])
+        assert res["stop_reason"] == "needs_human" and res["steps"] == 0, res
+        # kill-switch: a STOP file in sessions/ halts before any action
+        stop_path = os.path.join(out, "sessions", "STOP")
+        with open(stop_path, "w") as fh:
+            fh.write("stop\n")
+        res = autopilot(["--strategy-file", mine, "--seed", "0"])
+        assert res["stop_reason"] == "kill_switch" and res["steps"] == 0, res
+        os.remove(stop_path)
+        # dry-run: shadow only - live state and journal untouched
+        r = _live_run(entry, out, ["observe", "--json"], base)
+        energy_before = json.loads(r.stdout)["result"]["energy"]
+        journal_files = sorted(os.listdir(os.path.join(out, "sessions")))
+        res = autopilot(["--strategy-file", mine, "--seed", "0", "--dry-run"])
+        assert res["dry_run"] is True and res["steps"] >= 1, res
+        r = _live_run(entry, out, ["observe", "--json"], base)
+        assert json.loads(r.stdout)["result"]["energy"] == energy_before, r.stdout
+        assert sorted(os.listdir(os.path.join(out, "sessions"))) == journal_files
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    # schedule window: a one-hour window that is not now -> rate_window
+    import time as _time
+    hour = _time.localtime().tm_hour
+    window = [(hour + 2) % 24, (hour + 2) % 24]
+    pol = clivane.read_json(SF_POLICY)
+    pol["allowed_hours"] = window
+    pol_path = _write(tmp, "window_policy.json", json.dumps(pol))
+    out2, entry2 = _live_pkg(tmp, policy=pol_path, name="lp2")
+    port = clivane.free_port()
+    base = "http://127.0.0.1:%d" % port
+    proc = _start_server(SF_DIR, port, server_file="mock_server.py")
+    try:
+        mine = _write(tmp, "mine2.py",
+                      'def choose(observe, legal_actions):\n    return "mine"\n')
+        r = _live_run(entry2, out2,
+                      ["live-autopilot", "--strategy-file", mine], base)
+        res = json.loads(r.stdout)
+        assert res["stop_reason"] == "rate_window" and res["steps"] == 0, res
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    # hourly budget, counted from the journal: 2 manual acts fill a cap of 2
+    pol = clivane.read_json(SF_POLICY)
+    pol["budgets"]["max_actions_per_hour"] = 2
+    pol_path = _write(tmp, "hourly_policy.json", json.dumps(pol))
+    out3, entry3 = _live_pkg(tmp, policy=pol_path, name="lp3")
+    port = clivane.free_port()
+    base = "http://127.0.0.1:%d" % port
+    proc = _start_server(SF_DIR, port, server_file="mock_server.py")
+    try:
+        for _ in (1, 2):
+            r = _live_run(entry3, out3, ["act", "mine", "--json"], base)
+            assert r.returncode == 0, r.stderr
+        mine = _write(tmp, "mine3.py",
+                      'def choose(observe, legal_actions):\n    return "mine"\n')
+        r = _live_run(entry3, out3,
+                      ["live-autopilot", "--strategy-file", mine], base)
+        res = json.loads(r.stdout)
+        assert res["stop_reason"] == "rate_window" and res["steps"] == 0, res
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def t_live_observer(tmp):
+    out, entry = _live_pkg(tmp)
+    port = clivane.free_port()
+    base = "http://127.0.0.1:%d" % port
+    proc = _start_server(SF_DIR, port, server_file="mock_server.py")
+    try:
+        r = _live_run(entry, out, ["act", "mine", "--json"], base)
+        assert r.returncode == 0, r.stderr
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    oport = clivane.free_port()
+    env = dict(os.environ)
+    oproc = subprocess.Popen([sys.executable, entry, "live-observe",
+                              "--port", str(oport)], cwd=out, env=env,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.time() + 10
+        body = None
+        while time.time() < deadline:
+            try:
+                status, body = clivane.http_json(
+                    "GET", "http://127.0.0.1:%d/" % oport, timeout=1)
+                if status == 200:
+                    break
+            except Exception:
+                pass
+            assert oproc.poll() is None, "observer exited during startup"
+            time.sleep(0.05)
+        assert status == 200, status
+        assert "live-recorded" in body and "live-1" in body, body[:400]
+        assert "mine" in body, body[:400]
+        # read-only means read-only: writes are refused 405
+        status, _ = clivane.http_json(
+            "POST", "http://127.0.0.1:%d/" % oport, {"action": "mine"})
+        assert status == 405, status
+        status, _ = clivane.http_json(
+            "PUT", "http://127.0.0.1:%d/" % oport, {"action": "mine"})
+        assert status == 405, status
+    finally:
+        oproc.terminate()
+        oproc.wait(timeout=5)
+
+
+def t_live_conformance(tmp):
+    pkg, _entry = _live_pkg(tmp)
+    r = run([CLIVANE, "live-check", SF_ADAPTER, "--mock", SF_MOCK,
+             "--package", pkg])
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert "tier Gold" in r.stdout, r.stdout
+    conf = clivane.read_json(os.path.join(pkg, "conformance.json"))
+    assert all(conf["checks"].values()), conf
+    assert conf["tier"] == "Gold" and conf["verified"] is False, conf
+    assert clivane.tier_of(pkg) == "Gold"
+    # the tier ladder itself: policy/meta missing drops Gold to Silver
+    checks = dict(conf["checks"])
+    checks["policy"] = False
+    assert clivane.live_tier_from_checks(checks) == "Silver"
+    checks["journal"] = False
+    assert clivane.live_tier_from_checks(checks) == "Bronze"
+
+
 def t_examples_registry(tmp):
     registry = clivane.read_json(os.path.join(HERE, "examples", "registry.json"))
     pkgs = registry["packages"]
-    assert len(pkgs) == 6, [p["name"] for p in pkgs]
+    assert len(pkgs) == 8, [p["name"] for p in pkgs]
     assert all(p["tier"] == "Gold" for p in pkgs), pkgs
     paths = sorted(p["path"] for p in pkgs)
-    assert paths == ["forge", "game", "game-fullstack", "mirror",
-                     "openapi", "serve"], paths
+    assert paths == ["forge", "game", "game", "game-fullstack", "live",
+                     "mirror", "openapi", "serve"], paths
+    kinds = {p["name"]: p["kind"] for p in pkgs}
+    assert kinds["starforge-live"] == "live", kinds
+    assert kinds["starforge-shadow-cli"] == "deterministic", kinds
     # live recompute (never trust the file): the newer packages replay PASS
     for child in ("gemgrid-cli", "notebox-server", "gemgrid-arena"):
         pkg_dir = os.path.join(HERE, "examples", child)
         status, detail = clivane.verify_package(pkg_dir)
         assert status == "PASS", (child, status, detail)
         assert clivane.tier_of(pkg_dir) == "Gold", child
+    # the dual-mode pair: shadow verified by replay, live graded by
+    # conformance evidence - both Gold, by different proof systems
+    shadow_dir = os.path.join(SF_DIR, "shadow")
+    status, detail = clivane.verify_package(shadow_dir)
+    assert status == "PASS", (status, detail)
+    assert clivane.tier_of(shadow_dir) == "Gold"
+    assert clivane.tier_of(SF_DIR) == "Gold"
+    status, detail = clivane.verify_package(SF_DIR)
+    assert status == "PASS", (status, detail)
 
 
 def main():
@@ -855,7 +1155,13 @@ def main():
         ("autopilot: local strategies, budgets, target, dry-run", t_autopilot_local),
         ("autopilot: abuse - stall/illegal/strategy+step exceptions", t_autopilot_abuse),
         ("autopilot: arena bots + server budget abort + rate limit", t_autopilot_arena),
-        ("examples: registry holds 6 Gold packages", t_examples_registry),
+        ("live: adapter contract valid + invalid rejected", t_live_contract),
+        ("live: journal written + policy-blocked act refused", t_live_journal_policy),
+        ("live: shadow-check match + tamper detected", t_live_shadow_check),
+        ("live autopilot: budget_resource/blocked/needs_human/kill-switch/rate windows/dry-run", t_live_autopilot_guards),
+        ("live observer: dashboard 200 + writes refused 405", t_live_observer),
+        ("live-check: conformance Gold + tier ladder", t_live_conformance),
+        ("examples: registry holds 8 Gold packages", t_examples_registry),
     ]
     with tempfile.TemporaryDirectory(prefix="clivane-test-") as tmp:
         for name, fn in tests:
