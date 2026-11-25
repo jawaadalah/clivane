@@ -1,0 +1,39 @@
+{
+  "packages": [
+    {
+      "command_list": [],
+      "commands": 0,
+      "dir": "mirror-ls",
+      "name": "mirror-ls",
+      "path": "mirror",
+      "tier": "Gold"
+    },
+    {
+      "command_list": [
+        "count-notes",
+        "create-note",
+        "delete-note",
+        "list-notes",
+        "search-notes"
+      ],
+      "commands": 5,
+      "dir": "notebox-cli",
+      "name": "sample-app-cli",
+      "path": "forge",
+      "tier": "Gold"
+    },
+    {
+      "command_list": [
+        "create-todo",
+        "delete-todo",
+        "get-todo",
+        "list-todos"
+      ],
+      "commands": 4,
+      "dir": "todoline-cli",
+      "name": "todoline-cli",
+      "path": "openapi",
+      "tier": "Gold"
+    }
+  ]
+}
