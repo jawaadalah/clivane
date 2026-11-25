@@ -1,0 +1,8 @@
+{
+  "commands": [],
+  "entry": "mirror_ls.py",
+  "name": "mirror-ls",
+  "path": "mirror",
+  "source": "ls",
+  "tier": "Bronze"
+}
