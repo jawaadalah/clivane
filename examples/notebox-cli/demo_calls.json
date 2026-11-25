@@ -1,0 +1,1 @@
+[["create-note", "--title", "Shopping list", "--body", "milk, eggs, coffee", "--json"], ["create-note", "--title", "Reading", "--body", "finish chapter on golden traces", "--json"], ["list-notes", "--json"], ["search-notes", "--query", "shop", "--json"], ["count-notes", "--json"]]

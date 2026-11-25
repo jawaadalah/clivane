@@ -1,0 +1,114 @@
+{
+  "calls": [
+    {
+      "argv": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-cli [-h]\n                      {count-notes,create-note,delete-note,list-notes,search-notes}\n                      ...\n\nAgent CLI for sample_app\n\npositional arguments:\n  {count-notes,create-note,delete-note,list-notes,search-notes}\n    count-notes         Return how many notes exist.\n    create-note         Create a note with a title and an optional body;\n                        returns the note.\n    delete-note         Delete a note by id; returns True when a note was\n                        removed.\n    list-notes          List all notes, in creation order.\n    search-notes        Find notes whose title or body contains the query\n                        (case-insensitive).\n\noptions:\n  -h, --help            show this help message and exit"
+    },
+    {
+      "argv": [
+        "count-notes",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-cli count-notes [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json      structured JSON output"
+    },
+    {
+      "argv": [
+        "create-note",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-cli create-note [-h] --title TITLE [--body BODY] [--json]\n\noptions:\n  -h, --help     show this help message and exit\n  --title TITLE  str\n  --body BODY    str\n  --json         structured JSON output"
+    },
+    {
+      "argv": [
+        "delete-note",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-cli delete-note [-h] --note-id NOTE_ID [--json]\n\noptions:\n  -h, --help         show this help message and exit\n  --note-id NOTE_ID  int\n  --json             structured JSON output"
+    },
+    {
+      "argv": [
+        "list-notes",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-cli list-notes [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json      structured JSON output"
+    },
+    {
+      "argv": [
+        "search-notes",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: sample-app-cli search-notes [-h] --query QUERY [--json]\n\noptions:\n  -h, --help     show this help message and exit\n  --query QUERY  str\n  --json         structured JSON output"
+    },
+    {
+      "argv": [
+        "create-note",
+        "--title",
+        "Shopping list",
+        "--body",
+        "milk, eggs, coffee",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"create-note\",\n  \"result\": {\n    \"body\": \"milk, eggs, coffee\",\n    \"id\": 1,\n    \"title\": \"Shopping list\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "create-note",
+        "--title",
+        "Reading",
+        "--body",
+        "finish chapter on golden traces",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"create-note\",\n  \"result\": {\n    \"body\": \"finish chapter on golden traces\",\n    \"id\": 2,\n    \"title\": \"Reading\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "list-notes",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"list-notes\",\n  \"result\": [\n    {\n      \"body\": \"milk, eggs, coffee\",\n      \"id\": 1,\n      \"title\": \"Shopping list\"\n    },\n    {\n      \"body\": \"finish chapter on golden traces\",\n      \"id\": 2,\n      \"title\": \"Reading\"\n    }\n  ]\n}"
+    },
+    {
+      "argv": [
+        "search-notes",
+        "--query",
+        "shop",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"search-notes\",\n  \"result\": [\n    {\n      \"body\": \"milk, eggs, coffee\",\n      \"id\": 1,\n      \"title\": \"Shopping list\"\n    }\n  ]\n}"
+    },
+    {
+      "argv": [
+        "count-notes",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"count-notes\",\n  \"result\": 2\n}"
+    }
+  ],
+  "package": "sample-app-cli",
+  "seal_version": 1
+}

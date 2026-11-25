@@ -1,0 +1,14 @@
+{
+  "commands": [
+    "count-notes",
+    "create-note",
+    "delete-note",
+    "list-notes",
+    "search-notes"
+  ],
+  "entry": "sample_app_cli.py",
+  "name": "sample-app-cli",
+  "path": "forge",
+  "source": "sample_app.py",
+  "tier": "Bronze"
+}
