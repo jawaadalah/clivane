@@ -1,0 +1,21 @@
+{
+  "commands": [
+    "actions",
+    "act",
+    "live-autopilot",
+    "live-observe",
+    "observe",
+    "shadow-check",
+    "status"
+  ],
+  "entry": "starforge_live.py",
+  "kind": "live",
+  "label": "live-recorded",
+  "name": "starforge-live",
+  "path": "live",
+  "server": "mock_server.py",
+  "shadow": "starforge_shadow.py",
+  "shadow_package": "shadow",
+  "source": "starforge_adapter.py",
+  "tier": "Bronze"
+}

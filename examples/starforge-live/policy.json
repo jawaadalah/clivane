@@ -1,0 +1,1 @@
+{"allowed_hours":null,"approval_actions":["finish-raid"],"blocked_actions":["buy-stars"],"budgets":{"max_actions_per_hour":200,"max_actions_per_session":40,"resource_caps":{"energy":12}}}

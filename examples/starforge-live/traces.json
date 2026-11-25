@@ -1,0 +1,134 @@
+{
+  "calls": [
+    {
+      "argv": [
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-live [-h]\n                      {observe,actions,act,status,shadow-check,live-autopilot,live-observe}\n                      ...\n\nLive CLI for starforge_adapter (label: live-recorded)\n\npositional arguments:\n  {observe,actions,act,status,shadow-check,live-autopilot,live-observe}\n    observe             fetch and print the live state\n    actions             list actions legal right now\n    act                 perform one live action (journaled)\n    status              current session summary\n    shadow-check        measure a transcript against the shadow sim\n    live-autopilot      let a strategy play, under policy guardrails\n    live-observe        serve the read-only observer dashboard\n\noptions:\n  -h, --help            show this help message and exit"
+    },
+    {
+      "argv": [
+        "actions",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-live actions [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "act",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-live act [-h] [--policy POLICY] [--json] action\n\npositional arguments:\n  action\n\noptions:\n  -h, --help       show this help message and exit\n  --policy POLICY  policy file (default: policy.json next to the CLI)\n  --json"
+    },
+    {
+      "argv": [
+        "live-autopilot",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-live live-autopilot [-h] [--strategy {greedy,bfs,random}]\n                                     [--strategy-file STRATEGY_FILE]\n                                     [--seed SEED] [--max-steps MAX_STEPS]\n                                     [--max-seconds MAX_SECONDS]\n                                     [--target-score TARGET_SCORE]\n                                     [--stall-limit STALL_LIMIT]\n                                     [--bfs-max-nodes BFS_MAX_NODES]\n                                     [--policy POLICY] [--dry-run] [--json]\n\noptions:\n  -h, --help            show this help message and exit\n  --strategy {greedy,bfs,random}\n  --strategy-file STRATEGY_FILE\n                        Python file defining choose(observe, legal_actions)\n  --seed SEED\n  --max-steps MAX_STEPS\n  --max-seconds MAX_SECONDS\n  --target-score TARGET_SCORE\n  --stall-limit STALL_LIMIT\n  --bfs-max-nodes BFS_MAX_NODES\n  --policy POLICY       policy file (default: policy.json next to the CLI)\n  --dry-run             shadow simulation only: no live action is sent\n  --json"
+    },
+    {
+      "argv": [
+        "live-observe",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-live live-observe [-h] [--port PORT]\n\noptions:\n  -h, --help   show this help message and exit\n  --port PORT"
+    },
+    {
+      "argv": [
+        "observe",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-live observe [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "shadow-check",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-live shadow-check [-h] [--json] transcript\n\npositional arguments:\n  transcript\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "status",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "usage: starforge-live status [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json"
+    },
+    {
+      "argv": [
+        "observe",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"observe\",\n  \"result\": {\n    \"done\": false,\n    \"energy\": 20,\n    \"ore\": 0,\n    \"raids_done\": 0,\n    \"ship_hp\": 100,\n    \"stars\": 0\n  }\n}"
+    },
+    {
+      "argv": [
+        "actions",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"actions\",\n  \"result\": [\n    \"mine\",\n    \"trade\",\n    \"repair\",\n    \"finish-raid\",\n    \"buy-stars\"\n  ]\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "mine",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"action\": \"mine\",\n    \"label\": \"live-recorded\",\n    \"observe\": {\n      \"done\": false,\n      \"energy\": 17,\n      \"ore\": 2,\n      \"raids_done\": 0,\n      \"ship_hp\": 100,\n      \"stars\": 0\n    },\n    \"result\": {\n      \"ore_gained\": 2,\n      \"reward\": 2\n    },\n    \"session\": \"live-1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "act",
+        "trade",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"act\",\n  \"result\": {\n    \"action\": \"trade\",\n    \"label\": \"live-recorded\",\n    \"observe\": {\n      \"done\": false,\n      \"energy\": 16,\n      \"ore\": 0,\n      \"raids_done\": 0,\n      \"ship_hp\": 100,\n      \"stars\": 5\n    },\n    \"result\": {\n      \"reward\": 5,\n      \"stars_gained\": 5\n    },\n    \"session\": \"live-1\"\n  }\n}"
+    },
+    {
+      "argv": [
+        "status",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"status\",\n  \"result\": {\n    \"acts\": 2,\n    \"label\": \"live-recorded\",\n    \"observe\": {\n      \"done\": false,\n      \"energy\": 16,\n      \"ore\": 0,\n      \"raids_done\": 0,\n      \"ship_hp\": 100,\n      \"stars\": 5\n    },\n    \"session\": \"live-1\",\n    \"verified\": false\n  }\n}"
+    },
+    {
+      "argv": [
+        "shadow-check",
+        "transcript.jsonl",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr_empty": true,
+      "stdout": "{\n  \"command\": \"shadow-check\",\n  \"result\": {\n    \"fields_matched\": 35,\n    \"fields_mismatched\": 0,\n    \"label\": \"live-recorded\",\n    \"match_rate\": 1.0,\n    \"mismatches\": [],\n    \"transcript\": \"transcript.jsonl\",\n    \"transitions\": 5,\n    \"transitions_matched\": 5,\n    \"verified\": false\n  }\n}"
+    }
+  ],
+  "package": "starforge-live",
+  "seal_version": 1
+}

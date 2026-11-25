@@ -1,0 +1,14 @@
+{
+  "adapter": "starforge_adapter.py",
+  "checks": {
+    "actions_consistent": true,
+    "contract": true,
+    "journal": true,
+    "meta": true,
+    "policy": true,
+    "state_jsonable": true
+  },
+  "label": "live-recorded",
+  "tier": "Gold",
+  "verified": false
+}
