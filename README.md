@@ -16,7 +16,8 @@
   <img src="https://img.shields.io/badge/LLM-not%20required-brightgreen" alt="no LLM">
   <img src="https://img.shields.io/badge/API%20key-none-brightgreen" alt="no API key">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0">
-  <img src="https://img.shields.io/badge/selftest-6%2F6%20passing-brightgreen" alt="selftest">
+  <img src="https://img.shields.io/badge/version-1.1.0-orange" alt="v1.1.0">
+  <img src="https://img.shields.io/badge/selftest-10%2F10%20passing-brightgreen" alt="selftest">
 </p>
 
 ---
@@ -31,7 +32,7 @@ because every generated package carries **replayable proof** of how it
 behaves.
 
 Other approaches hand a software package to a large coding agent and let
-it improvise a CLI over many expensive phases. clivane takes three
+it improvise a CLI over many expensive phases. clivane takes five
 **deterministic** paths instead — the same input always produces the
 byte-identical package, in about a second, for free:
 
@@ -40,8 +41,10 @@ byte-identical package, in about a second, for free:
 | **forge** | a Python module | a full CLI: one subcommand per public function |
 | **mirror** | an existing CLI tool | a wrapper that adds a structured JSON envelope |
 | **openapi** | an OpenAPI 3 JSON spec | one subcommand per `operationId` |
+| **game** *(new in v1.1.0)* | a game module obeying the game contract | a session episode CLI with replay verification |
+| **serve / probe** *(new in v1.1.0)* | a Python module / a live server | an HTTP JSON server + remote client / an endpoint map + generic client |
 
-…and one proof system for all three: **Trace-Seal**, golden traces that
+…and one proof system for all five: **Trace-Seal**, golden traces that
 are recorded once and replayed to verify behaviour, feeding an explicit
 **Bronze / Silver / Gold** quality registry.
 
@@ -52,7 +55,7 @@ No installation, no dependencies — just Python 3.10+:
 ```bash
 git clone https://github.com/jawaadalah/clivane
 cd clivane
-python3 clivane.py selftest        # 6/6 checks, runs in seconds
+python3 clivane.py selftest        # 10/10 checks, runs in seconds
 ```
 
 ### Path 1 — forge a Python module
@@ -81,6 +84,36 @@ python3 examples/todoline-cli/todoline_cli.py --help
 python3 examples/todoline-cli/todoline_cli.py list-todos --base-url http://localhost:8799 --json
 ```
 
+### Path 4 — turn a game into an episode CLI
+
+The game module implements four functions — `new_game(seed)`,
+`legal_actions(state)`, `step(state, action) -> (state, reward, done,
+info)`, `observe(state)` — and clivane validates that contract before
+generating anything:
+
+```bash
+python3 clivane.py game examples/gemgrid_game.py --out examples/gemgrid-cli
+cd examples/gemgrid-cli
+python3 gemgrid_game_cli.py new --seed 7 --json
+python3 gemgrid_game_cli.py act down --json     # {observe, reward, done, info}
+python3 gemgrid_game_cli.py replay --seed 7 --actions down,down,down,right,up,right,right,right --json
+# -> "verified": true — the replayed episode ends in the identical state
+```
+
+### Path 5 — serve a module over HTTP, probe a live server
+
+```bash
+python3 clivane.py serve examples/sample_app.py --out examples/notebox-server
+cd examples/notebox-server
+python3 server.py                              # 127.0.0.1:8799, localhost only
+# in another shell — the generated client speaks to the server:
+CLIVANE_REMOTE=http://127.0.0.1:8799 \
+  python3 sample_app_server_client.py create-note --title "Remote" --json
+
+# …and the reverse direction: introspect any live server
+python3 clivane.py probe http://127.0.0.1:8799 --out /tmp/probed
+```
+
 ### Prove it — Trace-Seal + registry
 
 ```bash
@@ -89,7 +122,7 @@ python3 clivane.py verify examples/notebox-cli   # every later run: PASS / FAIL
 python3 clivane.py registry --dir examples       # tiers for every package
 ```
 
-## The three paths in detail
+## The five paths in detail
 
 ### forge — static analysis, not vibes
 
@@ -125,6 +158,38 @@ URL-quoted, query parameters become flags, POST/PUT/PATCH accept
 `--body '<json>'`, and requests run on `urllib` — still zero
 dependencies. `--json` wraps responses as `{"status", "body"}`.
 
+### game — episodes an agent can play, and prove
+
+Games and simulation environments are software too, but their interface
+is a *loop*, not a function call. The clivane game contract captures
+that loop in four functions (above); the generated CLI keeps the
+episode in `session.json`, so `new` / `observe` / `actions` / `act` /
+`status` across separate invocations form one transcript. `replay`
+re-runs an action list from its seed and verifies the final state is
+identical — an altered action fails loudly. Seed determinism is what
+lets a whole winning episode become a golden trace: the bundled
+GemGrid package is Gold because its 8-move win replays bit-for-bit.
+
+### serve & probe — software over HTTP, both directions
+
+`serve` wraps a module in a stdlib HTTP server: `GET /health`,
+`GET /commands`, and `POST /run` returning the forge envelope. `/run`
+is a dispatcher, not an evaluator — it only invokes commands from the
+module manifest, validates names and args, and can require an
+`X-Clivane-Token` header. It binds **localhost by default** and warns
+loudly on any other bind. The generated client CLI has the same
+commands as a forged CLI, so an agent can drive the software remotely.
+
+`probe` goes the other way: point it at a server that is already
+running and it introspects `/openapi.json`, `/commands`, `/health` and
+`/` — then emits an endpoint map (`SKILL.md`) and a generic client CLI
+for whatever answered.
+
+For Trace-Seal, server packages are verified end-to-end: the harness
+starts the generated server on an ephemeral port inside a fresh copy
+and replays the client calls against it — real HTTP traffic, stable
+traces.
+
 ## Trace-Seal & quality tiers
 
 Generated code is easy; *trusted* generated code is the hard part.
@@ -145,7 +210,7 @@ The registry turns that evidence into an explicit quality tier:
 
 Tiers are **recomputed live** by `clivane registry` — the tier string in
 a manifest is never trusted. See `examples/INDEX.md` for a live table:
-all three bundled examples are Gold.
+all five bundled examples are Gold.
 
 ## Included examples
 
@@ -154,6 +219,8 @@ all three bundled examples are Gold.
 | `sample-app-cli` | forge | `examples/sample_app.py` ("notebox") | create-note, list-notes, search-notes, count-notes, delete-note | Gold |
 | `mirror-ls` | mirror | the system `ls` tool | (single-command tool) | Gold |
 | `todoline-cli` | openapi | `examples/todoline.openapi.json` | list-todos, create-todo, get-todo, delete-todo | Gold |
+| `gemgrid-game-cli` | game | `examples/gemgrid_game.py` ("GemGrid") | new, observe, actions, act, status, replay | Gold |
+| `sample-app-server` | serve | `examples/sample_app.py` ("notebox") | the 5 notebox commands, over HTTP | Gold |
 
 `notebox` keeps its state in a JSON file and is deliberately
 timestamp-free, which is what makes its golden trace stable — a good
@@ -173,6 +240,8 @@ by CLI-Anything):
 | Reproducibility | **byte-identical output** | varies per run |
 | Backend required | only what the target itself needs | the real app must be installed |
 | GUI desktop apps | via mirror (if they ship any CLI) or forge (Python cores) | **strongest case — deep GUI mapping** |
+| Games / episodic environments | **game contract -> episode CLI + replay** | not addressed |
+| Remote / HTTP access | **serve (server+client) and probe (introspect live servers)** | local processes only |
 | Proof of behaviour | **Trace-Seal golden traces + tiers** | test suites written per project |
 | Package size | 1 generated file + SKILL.md | full package tree per app |
 
@@ -185,14 +254,17 @@ Python modules, existing CLIs, and HTTP APIs **today**, with proof.
 ```
 clivane/
 ├── clivane.py          # the whole tool (stdlib only)
-├── selftest.py         # 6-check self-test suite
+├── selftest.py         # 10-check self-test suite
 ├── SOP.md              # the methodology — source of truth
 ├── examples/
-│   ├── sample_app.py           # "notebox", the forge demo target
+│   ├── sample_app.py           # "notebox", the forge + serve demo target
 │   ├── notebox-cli/            # forged package (Gold, traces committed)
 │   ├── todoline.openapi.json   # the openapi demo spec
 │   ├── todoline-cli/           # generated package (Gold)
 │   ├── mirror-ls/              # mirrored package (Gold)
+│   ├── gemgrid_game.py         # "GemGrid", the game demo target
+│   ├── gemgrid-cli/            # game package (Gold, episode sealed)
+│   ├── notebox-server/         # server + client package (Gold)
 │   ├── registry.json           # machine-readable registry
 │   └── INDEX.md                # human-readable tier table
 └── assets/logo.png
@@ -204,6 +276,9 @@ clivane/
 clivane forge   <module.py> --out <dir>    # AST -> agent CLI
 clivane mirror  <tool>      --out <dir>    # existing CLI -> JSON wrapper
 clivane openapi <spec.json> --out <dir>    # OpenAPI -> per-operation CLI
+clivane game    <game.py>   --out <dir>    # game contract -> episode CLI
+clivane serve   <module.py> --out <dir>    # module -> HTTP server + client
+clivane probe   <base_url>  --out <dir>    # live server -> map + client
 clivane verify  <dir> [--record]           # Trace-Seal record / replay
 clivane registry --dir <parent>            # tiers -> registry.json + INDEX.md
 clivane list    <dir>                      # inspect one package
@@ -213,19 +288,23 @@ clivane selftest                           # run the self-test suite
 ## Methodology
 
 Everything above follows one written standard: **[SOP.md](SOP.md)** —
-the three paths, the Trace-Seal protocol, and the tier rules. If the
+the five paths, the Trace-Seal protocol, and the tier rules. If the
 code and the SOP ever disagree, the SOP wins.
 
 ## Bahasa Indonesia (singkat)
 
 clivane mengubah software apa pun menjadi CLI yang siap dipakai AI
-agent, **tanpa LLM dan tanpa API key**. Tiga jalur deterministik:
+agent, **tanpa LLM dan tanpa API key**. Lima jalur deterministik:
 **forge** (modul Python dianalisis statis via AST menjadi CLI lengkap),
-**mirror** (CLI yang sudah ada dibungkus envelope JSON terstruktur), dan
-**openapi** (spesifikasi OpenAPI 3 menjadi CLI per operasi). Setiap
-paket hasil dibuktikan dengan **Trace-Seal** — rekaman golden trace yang
-diputar ulang untuk verifikasi — dan diberi tier kualitas
-Bronze/Silver/Gold di registry. Satu file Python, nol dependensi.
+**mirror** (CLI yang sudah ada dibungkus envelope JSON terstruktur),
+**openapi** (spesifikasi OpenAPI 3 menjadi CLI per operasi), **game**
+(modul game berkontrak menjadi CLI episode dengan replay terverifikasi),
+dan **server** dua arah — **serve** (modul menjadi server HTTP + client
+jarak jauh) serta **probe** (introspeksi server yang sedang jalan
+menjadi peta endpoint + client). Setiap paket hasil dibuktikan dengan
+**Trace-Seal** — rekaman golden trace yang diputar ulang untuk
+verifikasi — dan diberi tier kualitas Bronze/Silver/Gold di registry.
+Satu file Python, nol dependensi.
 
 ## License
 

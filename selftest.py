@@ -3,7 +3,10 @@
 
 Coverage: forge (AST -> commands, run, JSON envelope, REPL), mirror (help
 parsing fixture + envelope), openapi (operationId -> commands, --help),
-verify (seal PASS + tampered trace FAIL), registry tiers, determinism.
+verify (seal PASS + tampered trace FAIL), registry tiers, determinism,
+game (contract valid/invalid, deterministic episodes, replay tamper),
+serve (live server: health/commands/run, remote client, token, probe),
+and the committed examples registry (5 packages, all Gold).
 """
 
 import hashlib
@@ -13,6 +16,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
+from collections import deque
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLIVANE = os.path.join(HERE, "clivane.py")
@@ -217,6 +224,230 @@ def t_determinism(tmp):
     assert digests[0] == digests[1], digests
 
 
+BAD_GAME = '''
+def new_game(seed):
+    return {"x": 0}
+
+
+def legal_actions(state):
+    return ["go"]
+
+
+def observe(state):
+    return {"x": state["x"]}
+'''
+
+WRONG_GAME = '''
+def new_game(seed):
+    return {"x": 0}
+
+
+def legal_actions(state):
+    return ["go"]
+
+
+def step(state, action):
+    return {"x": 1}, "not-a-number", False, {}
+
+
+def observe(state):
+    return {"x": state["x"]}
+'''
+
+
+def _solve_gemgrid(seed):
+    game = clivane.load_module_from_path(
+        os.path.join(HERE, "examples", "gemgrid_game.py"))
+
+    def key(s):
+        return (tuple(s["player"]), frozenset(tuple(x) for x in s["gems"]))
+
+    start = game.new_game(seed)
+    seen = {key(start)}
+    queue = deque([(start, [])])
+    while queue:
+        state, acts = queue.popleft()
+        if state["won"]:
+            return acts
+        for action in game.legal_actions(state):
+            nxt, _r, _d, _i = game.step(state, action)
+            if key(nxt) not in seen:
+                seen.add(key(nxt))
+                queue.append((nxt, acts + [action]))
+    raise AssertionError("no winning episode for seed %d" % seed)
+
+
+def t_game_contract(tmp):
+    good = os.path.join(HERE, "examples", "gemgrid_game.py")
+    out = os.path.join(tmp, "g")
+    r = run([CLIVANE, "game", good, "--out", out])
+    assert r.returncode == 0, r.stderr
+    manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+    assert manifest["path"] == "game", manifest
+    assert manifest["commands"] == ["act", "actions", "new", "observe",
+                                    "replay", "status"], manifest["commands"]
+    for label, source in (("missing-step", BAD_GAME), ("wrong-reward", WRONG_GAME)):
+        bad = os.path.join(tmp, label + ".py")
+        with open(bad, "w") as fh:
+            fh.write(source)
+        r = run([CLIVANE, "game", bad, "--out", os.path.join(tmp, label)])
+        assert r.returncode != 0, label
+        assert "game contract violation" in (r.stderr + r.stdout), (label, r.stdout, r.stderr)
+
+
+def t_game_episode(tmp):
+    actions = _solve_gemgrid(7)
+    assert actions, "empty solution"
+    transcripts = []
+    pkg = None
+    for i in (1, 2):
+        out = os.path.join(tmp, "g%d" % i)
+        r = run([CLIVANE, "game", os.path.join(HERE, "examples", "gemgrid_game.py"),
+                 "--out", out])
+        assert r.returncode == 0, r.stderr
+        manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+        entry = os.path.join(out, manifest["entry"])
+        transcript = []
+        calls = [["new", "--seed", "7", "--json"]]
+        calls += [["act", a, "--json"] for a in actions]
+        calls.append(["status", "--json"])
+        for argv in calls:
+            r = run([entry] + argv, cwd=out)
+            assert r.returncode == 0, (argv, r.stderr)
+            transcript.append(r.stdout)
+        last = json.loads(transcript[-2])  # final act
+        assert last["result"]["done"] is True and last["result"]["info"]["event"] == "win", last
+        transcripts.append(transcript)
+        pkg = (out, entry)
+    # determinism: same seed -> byte-identical episode transcript
+    assert transcripts[0] == transcripts[1], "episode transcripts diverged"
+    out, entry = pkg
+    # replay of the recorded transcript verifies
+    r = run([entry, "replay", "--seed", "7", "--actions", ",".join(actions), "--json"],
+            cwd=out)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert json.loads(r.stdout)["result"]["verified"] is True, r.stdout
+    # replay with one action altered must FAIL against the recorded session
+    altered = list(actions)
+    altered[0] = "right" if actions[0] != "right" else "left"
+    r = run([entry, "replay", "--seed", "7", "--actions", ",".join(altered), "--json"],
+            cwd=out)
+    assert r.returncode != 0, r.stdout
+    assert json.loads(r.stdout)["result"]["verified"] is False, r.stdout
+
+
+def _wait_health(url, proc, seconds=10):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            status, _ = clivane.http_json("GET", url + "/health", timeout=1)
+            if status == 200:
+                return
+        except Exception:
+            pass
+        assert proc.poll() is None, "server exited during startup"
+        time.sleep(0.05)
+    raise AssertionError("server at %s never became healthy" % url)
+
+
+def _start_server(pkg_dir, port, extra_env=None):
+    env = dict(os.environ)
+    env["CLIVANE_PORT"] = str(port)
+    if extra_env:
+        env.update(extra_env)
+    proc = subprocess.Popen([sys.executable, "server.py"], cwd=pkg_dir, env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _wait_health("http://127.0.0.1:%d" % port, proc)
+    return proc
+
+
+def t_serve_live(tmp):
+    out = os.path.join(tmp, "srv")
+    r = run([CLIVANE, "serve", os.path.join(HERE, "examples", "sample_app.py"),
+             "--out", out])
+    assert r.returncode == 0, r.stderr
+    manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+    assert manifest["path"] == "serve" and manifest["server"] == "server.py", manifest
+    entry = os.path.join(out, manifest["entry"])
+    port = clivane.free_port()
+    base = "http://127.0.0.1:%d" % port
+    proc = _start_server(out, port)
+    try:
+        status, health = clivane.http_json("GET", base + "/health")
+        assert status == 200 and health["status"] == "ok", health
+        status, cmds = clivane.http_json("GET", base + "/commands")
+        names = [c["cmd"] for c in cmds["commands"]]
+        assert "create-note" in names and "list-notes" in names, names
+        # /run via raw HTTP
+        status, env_resp = clivane.http_json(
+            "POST", base + "/run", {"command": "create-note",
+                                    "args": {"title": "ViaHTTP", "body": "x"}})
+        assert status == 200 and env_resp["result"]["title"] == "ViaHTTP", env_resp
+        # unknown command is rejected, never evaluated
+        status, err = clivane.http_json(
+            "POST", base + "/run", {"command": "os-system", "args": {}})
+        assert status == 400 and "unknown command" in err["error"], err
+        # remote client end-to-end
+        env = dict(os.environ)
+        env["CLIVANE_REMOTE"] = base
+        r = subprocess.run([sys.executable, entry, "create-note", "--title",
+                            "ViaClient", "--json"], cwd=out, env=env,
+                           capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        assert json.loads(r.stdout)["result"]["title"] == "ViaClient", r.stdout
+        r = subprocess.run([sys.executable, entry, "list-notes", "--json"],
+                           cwd=out, env=env, capture_output=True, text=True, timeout=30)
+        titles = [n["title"] for n in json.loads(r.stdout)["result"]]
+        assert titles == ["ViaHTTP", "ViaClient"], titles
+        # probe the live server, then use the probed client
+        probe_out = os.path.join(tmp, "probe")
+        r = run([CLIVANE, "probe", base, "--out", probe_out])
+        assert r.returncode == 0, r.stderr
+        p_manifest = clivane.read_json(os.path.join(probe_out, "manifest.json"))
+        assert "create-note" in p_manifest["commands"], p_manifest
+        skill = open(os.path.join(probe_out, "SKILL.md")).read()
+        assert "/run" in skill and "create-note" in skill, skill
+        p_entry = os.path.join(probe_out, p_manifest["entry"])
+        r = run([p_entry, "list-notes", "--json"], cwd=probe_out)
+        assert r.returncode == 0, r.stderr
+        assert "ViaClient" in r.stdout, r.stdout
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    # token gate: /run without the header -> 401; with it -> 200
+    port2 = clivane.free_port()
+    base2 = "http://127.0.0.1:%d" % port2
+    proc = _start_server(out, port2, {"CLIVANE_TOKEN": "s3cret"})
+    try:
+        status, err = clivane.http_json(
+            "POST", base2 + "/run", {"command": "list-notes", "args": {}})
+        assert status == 401, (status, err)
+        status, ok = clivane.http_json(
+            "POST", base2 + "/run", {"command": "list-notes", "args": {}},
+            headers={"X-Clivane-Token": "s3cret"})
+        # same package dir -> the notes written above are still the state
+        assert status == 200, (status, ok)
+        assert [n["title"] for n in ok["result"]] == ["ViaHTTP", "ViaClient"], ok
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def t_examples_registry(tmp):
+    registry = clivane.read_json(os.path.join(HERE, "examples", "registry.json"))
+    pkgs = registry["packages"]
+    assert len(pkgs) == 5, [p["name"] for p in pkgs]
+    assert all(p["tier"] == "Gold" for p in pkgs), pkgs
+    paths = sorted(p["path"] for p in pkgs)
+    assert paths == ["forge", "game", "mirror", "openapi", "serve"], paths
+    # live recompute (never trust the file): both new packages replay PASS
+    for child in ("gemgrid-cli", "notebox-server"):
+        pkg_dir = os.path.join(HERE, "examples", child)
+        status, detail = clivane.verify_package(pkg_dir)
+        assert status == "PASS", (child, status, detail)
+        assert clivane.tier_of(pkg_dir) == "Gold", child
+
+
 def main():
     tests = [
         ("forge: AST->commands, run, --json, REPL", t_forge_ast_and_run),
@@ -225,6 +456,10 @@ def main():
         ("verify: seal PASS + tampered trace FAIL", t_verify_pass_and_tamper),
         ("registry: Silver -> Gold tiers", t_registry_tiers),
         ("determinism: forge digest stable x2", t_determinism),
+        ("game: contract valid + invalid rejected", t_game_contract),
+        ("game: deterministic episode + replay tamper FAIL", t_game_episode),
+        ("serve: live server health/run/client/probe/token", t_serve_live),
+        ("examples: registry holds 5 Gold packages", t_examples_registry),
     ]
     with tempfile.TemporaryDirectory(prefix="clivane-test-") as tmp:
         for name, fn in tests:

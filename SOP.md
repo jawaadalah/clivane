@@ -68,6 +68,82 @@ Use when the target is an HTTP API with an OpenAPI 3 JSON document.
 4. `--json` wraps responses as `{"status": int, "body": ...}`; HTTP
    status >= 400 yields exit code 1.
 
+## Path 4 — game (new: episode CLI for contract games)
+
+Use when the target is a game (or any episodic, seed-deterministic
+environment) written as a Python module.
+
+The contract — all four functions, validated by probing at generation
+time; a module that violates any point is rejected with a named reason:
+
+| Function | Signature | Rules |
+|---|---|---|
+| `new_game` | `(seed) -> state` | state is a `dict`, JSON-able |
+| `legal_actions` | `(state) -> list[str]` | non-empty while not done |
+| `step` | `(state, action) -> (state, reward, done, info)` | reward is a number, done a bool, info a dict |
+| `observe` | `(state) -> dict` | JSON-able observation |
+
+Generation emits a session CLI: `new --seed N` starts an episode and
+persists it to `session.json` next to the CLI (so separate invocations
+share one episode and form a transcript), `observe`, `actions`,
+`act <action>` (validated against `legal_actions`, refused after done),
+and `status`.
+
+Determinism is the contract's load-bearing wall: the same seed must
+produce the same episode, bit for bit. `replay --seed N --actions a,b,c`
+re-runs from scratch and verifies — against the recorded session when a
+transcript for that seed exists (same actions *and* identical final
+state; an altered action FAILs), or against a second identical replay
+when it does not. Because replay is an ordinary CLI command, it joins
+`demo_calls.json` and the whole episode is Trace-Sealed like any other
+package: a game package reaches Gold only if its winning episode
+replays identically in a fresh copy.
+
+## Path 5 — server (new: serve + probe, two directions)
+
+### serve — module -> HTTP server + remote client
+
+Use when agents should reach the software over HTTP instead of a local
+process. The module is analysed exactly like forge (same specs), then:
+
+1. `server.py` (stdlib `http.server` only) exposes:
+   - `GET /health` -> `{"status": "ok", "name": ...}`,
+   - `GET /commands` -> the command specs (the manifest, over HTTP),
+   - `POST /run` with `{"command": ..., "args": {...}}` -> the forge
+     envelope `{"command", "result"}`.
+2. A client CLI with the same commands as forge; each call is a
+   `POST /run`. Base URL: `--remote`, else `$CLIVANE_REMOTE`, else
+   `http://127.0.0.1:8799`.
+
+Security rules (non-negotiable):
+
+- **Bind localhost by default** (`127.0.0.1`). Binding anything else
+  prints a loud warning — never expose `0.0.0.0` without a token and a
+  reason.
+- **`/run` is a dispatcher, not an evaluator.** It only invokes
+  functions named in the module manifest, validates the command name,
+  rejects unknown args, and coerces values by the spec's types. There
+  is no eval, no arbitrary attribute access, no shell.
+- **Optional token.** `--token` / `$CLIVANE_TOKEN` makes `/run` require
+  the `X-Clivane-Token` header (401 otherwise); clients send it from
+  the same env var automatically.
+
+Trace-Seal covers server packages end-to-end: the verify harness starts
+the generated server on an ephemeral localhost port inside the fresh
+package copy and runs the client probe calls against it, so the golden
+trace is real client<->server traffic while argv stays stable.
+
+### probe — live server -> endpoint map + generic client
+
+The reverse direction. `clivane probe <base_url>` introspects a server
+that is *already running*: it tries `GET /openapi.json` (operations are
+mapped like Path 3), `GET /commands` + `POST /run` (serve-style command
+specs), `GET /health` and `GET /`. Whatever answers becomes the
+endpoint map in `SKILL.md`, plus a generic client CLI: one subcommand
+per discovered run-command (`--args '<json>'`) or operation
+(`--params` / `--body '<json>'`). A server that answers none of the
+probes is rejected with a clear message.
+
 ## Trace-Seal — the proof system
 
 1. Probe set = `--help`, every command's `--help`, plus the argv arrays
@@ -97,7 +173,7 @@ seals; it never trusts the tier string stored in a manifest) and writes
 
 ## Adding a package by hand (checklist)
 
-- [ ] Generate with one of the three paths.
+- [ ] Generate with one of the five paths.
 - [ ] Add `demo_calls.json` exercising the main flows.
 - [ ] `clivane verify <dir>` → SEALED, run again → PASS.
 - [ ] `clivane registry --dir <parent>` shows the tier you expect.

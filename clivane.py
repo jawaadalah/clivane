@@ -8,6 +8,9 @@ Paths:
   forge   - static AST analysis of a Python module -> full agent CLI
   mirror  - wrap an existing CLI tool -> JSON-envelope wrapper CLI
   openapi - OpenAPI 3 JSON spec -> per-operation CLI
+  game    - a Python game obeying the clivane game contract -> episode CLI
+  serve   - a Python module -> HTTP JSON server + remote client CLI
+  probe   - introspect a live server -> endpoint map + generic client CLI
 
 Proof:
   verify  - Trace-Seal: record golden traces, replay them, PASS/FAIL
@@ -18,14 +21,20 @@ See SOP.md for the full methodology.
 
 import argparse
 import ast
+import contextlib
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 
 SEAL_VERSION = 1
 TIERS = ("Bronze", "Silver", "Gold")
@@ -62,13 +71,54 @@ def pkg_manifest(pkg_dir):
     return read_json(path)
 
 
-def run_cli(pkg_dir, entry, argv, timeout=30):
+def run_cli(pkg_dir, entry, argv, timeout=30, env=None):
     """Run a generated CLI inside a package dir; return (code, out, err)."""
+    full_env = None
+    if env:
+        full_env = dict(os.environ)
+        full_env.update(env)
     proc = subprocess.run(
         [sys.executable, entry] + list(argv),
         cwd=pkg_dir, capture_output=True, text=True, timeout=timeout,
+        env=full_env,
     )
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def load_module_from_path(module_path, alias=None):
+    """Import a Python module straight from a file path."""
+    mod_name = os.path.splitext(os.path.basename(module_path))[0]
+    spec = importlib.util.spec_from_file_location(alias or mod_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def free_port():
+    with contextlib.closing(socket.socket()) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def http_json(method, url, payload=None, headers=None, timeout=5):
+    """Tiny JSON HTTP helper; returns (status, parsed-or-text)."""
+    data = None
+    hdrs = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        hdrs["Content-Type"] = "application/json"
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status, raw = resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, exc.read().decode("utf-8", "replace")
+    try:
+        return status, json.loads(raw)
+    except Exception:
+        return status, raw
 
 
 # --------------------------------------------------------------------------
@@ -652,6 +702,860 @@ def cmd_openapi(spec_path, out_dir):
 
 
 # --------------------------------------------------------------------------
+# GAME - a Python game obeying the clivane game contract -> episode CLI
+#
+# Contract (validated at generation time):
+#   new_game(seed) -> state            (dict, JSON-able)
+#   legal_actions(state) -> list[str]
+#   step(state, action) -> (state, reward, done, info)
+#   observe(state) -> dict             (JSON-able)
+# --------------------------------------------------------------------------
+
+GAME_FUNCTIONS = ("new_game", "legal_actions", "step", "observe")
+
+
+def validate_game_contract(module_path):
+    """Load the game module and probe its contract; SystemExit if unfit."""
+    try:
+        module = load_module_from_path(module_path)
+    except Exception as exc:
+        raise SystemExit("game contract violation: cannot import %s (%s)"
+                         % (module_path, exc))
+    for fname in GAME_FUNCTIONS:
+        fn = getattr(module, fname, None)
+        if not callable(fn):
+            raise SystemExit(
+                "game contract violation: %s must define a callable %s()"
+                % (os.path.basename(module_path), fname))
+
+    def _jsonable(value, what):
+        try:
+            json.dumps(value)
+        except Exception:
+            raise SystemExit("game contract violation: %s is not JSON-able" % what)
+
+    try:
+        state = module.new_game(0)
+    except Exception as exc:
+        raise SystemExit("game contract violation: new_game(0) raised %s" % exc)
+    if not isinstance(state, dict):
+        raise SystemExit("game contract violation: new_game() must return a dict state")
+    _jsonable(state, "the state from new_game()")
+    try:
+        actions = module.legal_actions(state)
+    except Exception as exc:
+        raise SystemExit("game contract violation: legal_actions() raised %s" % exc)
+    if (not isinstance(actions, list) or not actions
+            or not all(isinstance(a, str) for a in actions)):
+        raise SystemExit(
+            "game contract violation: legal_actions() must return a non-empty list[str]")
+    try:
+        obs = module.observe(state)
+    except Exception as exc:
+        raise SystemExit("game contract violation: observe() raised %s" % exc)
+    if not isinstance(obs, dict):
+        raise SystemExit("game contract violation: observe() must return a dict")
+    _jsonable(obs, "the observation")
+    try:
+        result = module.step(state, actions[0])
+    except Exception as exc:
+        raise SystemExit("game contract violation: step() raised %s" % exc)
+    if not isinstance(result, (tuple, list)) or len(result) != 4:
+        raise SystemExit(
+            "game contract violation: step() must return (state, reward, done, info)")
+    new_state, reward, done, info = result
+    if not isinstance(new_state, dict):
+        raise SystemExit("game contract violation: step() must return a dict state")
+    _jsonable(new_state, "the state from step()")
+    if not isinstance(reward, (int, float)) or isinstance(reward, bool):
+        raise SystemExit("game contract violation: step() reward must be a number")
+    if not isinstance(done, bool):
+        raise SystemExit("game contract violation: step() done must be a bool")
+    if not isinstance(info, dict):
+        raise SystemExit("game contract violation: step() info must be a dict")
+    return module
+
+
+GAME_TEMPLATE = '''#!/usr/bin/env python3
+"""@NAME@ - episode CLI for the game module `@MOD@` (clivane game path).
+
+Session state lives in session.json next to this file, so separate
+invocations continue the same episode. `replay` re-runs an action list
+from a seed and checks the final state matches the recorded session
+(or a second identical replay when no matching session exists).
+"""
+import argparse
+import importlib
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+MODULE = importlib.import_module("@MOD@")
+HERE = os.path.dirname(os.path.abspath(__file__))
+SESSION = os.path.join(HERE, "session.json")
+
+
+def save_session(sess):
+    with open(SESSION, "w", encoding="utf-8") as fh:
+        json.dump(sess, fh, indent=2, sort_keys=True)
+
+
+def load_session():
+    if not os.path.isfile(SESSION):
+        raise SystemExit("no session yet - start one with: new --seed N")
+    with open(SESSION, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def emit(command, result, as_json):
+    if as_json:
+        print(json.dumps({"command": command, "result": result},
+                         indent=2, sort_keys=True, default=str))
+    elif isinstance(result, (dict, list)):
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    else:
+        print(result)
+
+
+def play(seed, actions):
+    """Run a fresh episode; return (final_state, total_reward)."""
+    state = MODULE.new_game(seed)
+    total = 0
+    for action in actions:
+        legal = MODULE.legal_actions(state)
+        if action not in legal:
+            return state, total, False
+        state, reward, done, _info = MODULE.step(state, action)
+        total += reward
+        if done:
+            break
+    return state, total, True
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="@NAME@", description="Episode CLI for @MOD@")
+    sub = p.add_subparsers(dest="command")
+    n = sub.add_parser("new", help="start a new episode")
+    n.add_argument("--seed", type=int, default=0)
+    n.add_argument("--json", action="store_true")
+    o = sub.add_parser("observe", help="observe the current state")
+    o.add_argument("--json", action="store_true")
+    a = sub.add_parser("actions", help="list legal actions")
+    a.add_argument("--json", action="store_true")
+    t = sub.add_parser("act", help="apply one action")
+    t.add_argument("action")
+    t.add_argument("--json", action="store_true")
+    s = sub.add_parser("status", help="session summary")
+    s.add_argument("--json", action="store_true")
+    r = sub.add_parser("replay", help="replay actions from a seed and verify")
+    r.add_argument("--seed", type=int, required=True)
+    r.add_argument("--actions", required=True, help="comma-separated actions")
+    r.add_argument("--json", action="store_true")
+    return p
+
+
+def main(argv=None):
+    ns = build_parser().parse_args(argv)
+    if not ns.command:
+        build_parser().print_help()
+        return 2
+    if ns.command == "new":
+        state = MODULE.new_game(ns.seed)
+        sess = {"seed": ns.seed, "state": state, "actions": [],
+                "last_reward": None, "done": False}
+        save_session(sess)
+        emit("new", {"seed": ns.seed, "observe": MODULE.observe(state)}, ns.json)
+        return 0
+    if ns.command == "replay":
+        actions = [a for a in ns.actions.split(",") if a != ""]
+        final, total, ok = play(ns.seed, actions)
+        verified = False
+        if ok:
+            sess = load_session() if os.path.isfile(SESSION) else None
+            if sess is not None and sess["seed"] == ns.seed:
+                # A transcript exists for this seed: the replay must
+                # reproduce it exactly - same actions, same final state.
+                # Any altered action is a verification failure.
+                verified = (sess["actions"] == actions
+                            and final == sess["state"])
+            else:
+                # No recorded transcript: determinism means a second
+                # identical replay must land on the identical state.
+                again, _, ok2 = play(ns.seed, actions)
+                verified = bool(ok2 and again == final)
+        emit("replay", {"seed": ns.seed, "steps": len(actions),
+                        "total_reward": total,
+                        "final_observe": MODULE.observe(final),
+                        "verified": verified}, ns.json)
+        return 0 if verified else 1
+    sess = load_session()
+    state = sess["state"]
+    if ns.command == "observe":
+        emit("observe", MODULE.observe(state), ns.json)
+        return 0
+    if ns.command == "actions":
+        emit("actions", MODULE.legal_actions(state), ns.json)
+        return 0
+    if ns.command == "status":
+        emit("status", {"seed": sess["seed"], "steps": len(sess["actions"]),
+                        "done": sess["done"], "last_reward": sess["last_reward"],
+                        "observe": MODULE.observe(state)}, ns.json)
+        return 0
+    if ns.command == "act":
+        if sess["done"]:
+            print("error: episode is done - start a new game", file=sys.stderr)
+            return 1
+        legal = MODULE.legal_actions(state)
+        if ns.action not in legal:
+            print("error: illegal action %r (legal: %s)"
+                  % (ns.action, ", ".join(legal)), file=sys.stderr)
+            return 1
+        state, reward, done, info = MODULE.step(state, ns.action)
+        sess.update({"state": state, "last_reward": reward, "done": done})
+        sess["actions"].append(ns.action)
+        save_session(sess)
+        emit("act", {"observe": MODULE.observe(state), "reward": reward,
+                     "done": done, "info": info}, ns.json)
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def skill_md_game(name, mod_name):
+    return "\n".join([
+        "# %s" % name,
+        "",
+        "Episode CLI for the game `%s` (generated by the clivane game path)." % mod_name,
+        "The game module obeys the clivane game contract: `new_game(seed)`,",
+        "`legal_actions(state)`, `step(state, action)`, `observe(state)`.",
+        "",
+        "## Commands",
+        "",
+        "- `new --seed N [--json]` - start an episode; state is saved to",
+        "  `session.json` next to the CLI so invocations share the episode.",
+        "- `observe [--json]` - the current observation.",
+        "- `actions [--json]` - legal actions in the current state.",
+        "- `act <action> [--json]` - apply one step; returns",
+        "  `{observe, reward, done, info}` and appends to the transcript.",
+        "- `status [--json]` - seed, steps taken, done flag, last reward.",
+        "- `replay --seed N --actions a,b,c [--json]` - re-play from scratch",
+        "  and verify the final state is identical (seed determinism).",
+        "",
+        "## Conventions",
+        "",
+        "- `--json` wraps results as `{\"command\": ..., \"result\": ...}`.",
+        "- Illegal actions and acting after `done` exit 1 with an error.",
+        "- A replay that diverges exits 1 and reports `\"verified\": false`.",
+        "",
+    ])
+
+
+def cmd_game(module_path, out_dir):
+    if not os.path.isfile(module_path):
+        raise SystemExit("module not found: %s" % module_path)
+    validate_game_contract(module_path)
+    mod_name = os.path.splitext(os.path.basename(module_path))[0]
+    name = mod_name.replace("_", "-") + "-cli"
+    entry = name.replace("-", "_") + ".py"
+    os.makedirs(out_dir, exist_ok=True)
+    shutil.copyfile(module_path, os.path.join(out_dir, os.path.basename(module_path)))
+    write_file(os.path.join(out_dir, entry),
+               GAME_TEMPLATE.replace("@NAME@", name).replace("@MOD@", mod_name))
+    write_file(os.path.join(out_dir, "SKILL.md"), skill_md_game(name, mod_name))
+    write_file(os.path.join(out_dir, "test_smoke.py"), SMOKE_TEMPLATE.replace("@ENTRY@", entry))
+    manifest = {
+        "name": name,
+        "path": "game",
+        "entry": entry,
+        "source": os.path.basename(module_path),
+        "commands": ["act", "actions", "new", "observe", "replay", "status"],
+        "tier": "Bronze",
+    }
+    write_file(os.path.join(out_dir, "manifest.json"),
+               json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest
+
+
+# --------------------------------------------------------------------------
+# SERVE - a Python module -> HTTP JSON server + remote client CLI
+#
+# The generated server exposes the module's public functions (same spec
+# analysis as forge) over stdlib http.server:
+#   GET  /health   -> {"status": "ok", ...}
+#   GET  /commands -> {"commands": [specs]}
+#   POST /run      -> {"command": ..., "args": {...}} -> forge envelope
+# Security: binds 127.0.0.1 by default, /run only dispatches commands in
+# the module manifest (no free eval), optional X-Clivane-Token header.
+# --------------------------------------------------------------------------
+
+SERVER_TEMPLATE = '''#!/usr/bin/env python3
+"""@NAME@ server - HTTP JSON front-end for `@MOD@` (clivane serve path).
+
+Endpoints:
+  GET  /health    -> {"status": "ok", "name": "@NAME@"}
+  GET  /commands  -> {"name": ..., "commands": [specs]}
+  POST /run       -> {"command": "<cmd>", "args": {...}}
+                     returns the forge envelope {"command", "result"}
+
+Binds 127.0.0.1 unless --host/CLIVANE_HOST says otherwise; a non-local
+bind prints a warning. Set --token or CLIVANE_TOKEN to require the
+X-Clivane-Token header on /run.
+"""
+import argparse
+import importlib
+import json
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+MODULE = importlib.import_module("@MOD@")
+SPECS = json.loads(r"""@SPECS@""")
+BY_CMD = {s["cmd"]: s for s in SPECS}
+NAME = "@NAME@"
+
+
+def coerce(value, type_name):
+    if value is None or not isinstance(value, str):
+        if type_name == "bool" and isinstance(value, bool):
+            return value
+        return value
+    if type_name == "int":
+        return int(value)
+    if type_name == "float":
+        return float(value)
+    if type_name == "bool":
+        return value.lower() in ("1", "true", "yes", "on")
+    if type_name in ("list", "dict"):
+        return json.loads(value)
+    return value
+
+
+class Handler(BaseHTTPRequestHandler):
+    token = None
+
+    def log_message(self, *args):
+        pass
+
+    def _send(self, status, payload):
+        body = json.dumps(payload, indent=2, sort_keys=True, default=str).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            self._send(200, {"status": "ok", "name": NAME})
+        elif self.path == "/commands":
+            self._send(200, {"name": NAME, "commands": SPECS})
+        elif self.path == "/":
+            self._send(200, {"name": NAME,
+                             "endpoints": ["/health", "/commands", "/run"]})
+        else:
+            self._send(404, {"error": "not found: %s" % self.path})
+
+    def do_POST(self):
+        if self.path != "/run":
+            self._send(404, {"error": "not found: %s" % self.path})
+            return
+        if self.token and self.headers.get("X-Clivane-Token") != self.token:
+            self._send(401, {"error": "missing or wrong X-Clivane-Token"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception as exc:
+            self._send(400, {"error": "bad JSON body: %s" % exc})
+            return
+        cmd = payload.get("command")
+        spec = BY_CMD.get(cmd)
+        if spec is None:
+            self._send(400, {"error": "unknown command: %r (known: %s)"
+                             % (cmd, ", ".join(sorted(BY_CMD)))})
+            return
+        args = payload.get("args") or {}
+        if not isinstance(args, dict):
+            self._send(400, {"error": "args must be an object"})
+            return
+        known = {a["name"] for a in spec["args"]}
+        extra = sorted(set(args) - known)
+        if extra:
+            self._send(400, {"error": "unknown args for %s: %s"
+                             % (cmd, ", ".join(extra))})
+            return
+        kwargs = {}
+        for arg in spec["args"]:
+            if arg["name"] in args:
+                try:
+                    kwargs[arg["name"]] = coerce(args[arg["name"]], arg["type"])
+                except Exception as exc:
+                    self._send(400, {"error": "bad value for %s: %s"
+                                     % (arg["name"], exc)})
+                    return
+            elif arg["required"]:
+                self._send(400, {"error": "missing required arg: %s" % arg["name"]})
+                return
+            else:
+                kwargs[arg["name"]] = arg["default"]
+        try:
+            result = getattr(MODULE, spec["func"])(**kwargs)
+            json.dumps(result)
+        except Exception as exc:
+            self._send(500, {"error": "%s: %s" % (type(exc).__name__, exc)})
+            return
+        self._send(200, {"command": spec["cmd"], "result": result})
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog=NAME + " server")
+    parser.add_argument("--host", default=os.environ.get("CLIVANE_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int,
+                        default=int(os.environ.get("CLIVANE_PORT", "8799")))
+    parser.add_argument("--token", default=os.environ.get("CLIVANE_TOKEN"))
+    ns = parser.parse_args(argv)
+    if ns.host not in ("127.0.0.1", "localhost", "::1"):
+        print("WARNING: binding %s exposes this server beyond localhost; "
+              "set a --token before doing this." % ns.host, file=sys.stderr)
+    Handler.token = ns.token
+    server = ThreadingHTTPServer((ns.host, ns.port), Handler)
+    print("%s server on http://%s:%d" % (NAME, ns.host, ns.port))
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+CLIENT_TEMPLATE = '''#!/usr/bin/env python3
+"""@NAME@ client - remote CLI for a clivane serve server (stdlib only).
+
+Same commands as the forged CLI, but each call is a POST /run to the
+server. The base URL comes from --remote, else $CLIVANE_REMOTE, else
+http://127.0.0.1:8799. $CLIVANE_TOKEN is sent as X-Clivane-Token.
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+SPECS = json.loads(r"""@SPECS@""")
+DEFAULT_REMOTE = "http://127.0.0.1:8799"
+
+
+def coerce(value, type_name):
+    if value is None:
+        return None
+    if type_name == "int":
+        return int(value)
+    if type_name == "float":
+        return float(value)
+    if type_name == "bool":
+        return str(value).lower() in ("1", "true", "yes", "on")
+    if type_name in ("list", "dict"):
+        return json.loads(value)
+    return value
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="@NAME@",
+                                     description="Remote client for @MOD@")
+    parser.add_argument("--remote",
+                        default=os.environ.get("CLIVANE_REMOTE", DEFAULT_REMOTE),
+                        help="base URL of the clivane serve server")
+    sub = parser.add_subparsers(dest="command")
+    for spec in SPECS:
+        p = sub.add_parser(spec["cmd"], help=spec["doc"])
+        for arg in spec["args"]:
+            p.add_argument(arg["flag"], required=arg["required"],
+                           default=arg["default"], help=arg["type"])
+        p.add_argument("--json", action="store_true", help="structured JSON output")
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if not ns.command:
+        parser.print_help()
+        return 2
+    spec = next(s for s in SPECS if s["cmd"] == ns.command)
+    args = {}
+    for arg in spec["args"]:
+        args[arg["name"]] = coerce(getattr(ns, arg["name"]), arg["type"])
+    body = json.dumps({"command": spec["cmd"], "args": args}).encode()
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    token = os.environ.get("CLIVANE_TOKEN")
+    if token:
+        headers["X-Clivane-Token"] = token
+    req = urllib.request.Request(ns.remote.rstrip("/") + "/run", data=body,
+                                 headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"error": raw}
+        print("error: %s" % payload.get("error", exc), file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print("error: cannot reach server at %s (%s)" % (ns.remote, exc),
+              file=sys.stderr)
+        return 1
+    if ns.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        result = payload.get("result")
+        if isinstance(result, (dict, list)):
+            print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        elif result is not None:
+            print(result)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def skill_md_serve(name, mod_name, specs):
+    lines = [
+        "# %s" % name,
+        "",
+        "HTTP server + remote client for the module `%s` (clivane serve path)." % mod_name,
+        "",
+        "## Run the server",
+        "",
+        "```bash",
+        "python3 server.py                 # 127.0.0.1:8799 (CLIVANE_PORT to change)",
+        "python3 server.py --token SECRET  # require X-Clivane-Token on /run",
+        "```",
+        "",
+        "Endpoints: `GET /health`, `GET /commands`, `POST /run` with",
+        '`{"command": "<cmd>", "args": {...}}` -> the forge envelope',
+        '`{"command": ..., "result": ...}`. `/run` only dispatches commands',
+        "from the module manifest - there is no free-form evaluation.",
+        "",
+        "## Run the client",
+        "",
+        "```bash",
+        "export CLIVANE_REMOTE=http://127.0.0.1:8799",
+        "python3 %s <command> [--json]" % (name.replace("-", "_") + "_client.py"),
+        "```",
+        "",
+        "## Commands (served)",
+        "",
+    ]
+    for spec in specs:
+        lines.append("- `%s` - %s" % (spec["cmd"], spec["doc"]))
+    lines += [
+        "",
+        "## Security",
+        "",
+        "- Default bind is localhost only; a non-local bind warns loudly.",
+        "- Set a token before exposing the server beyond your machine.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_serve(module_path, out_dir):
+    if not os.path.isfile(module_path):
+        raise SystemExit("module not found: %s" % module_path)
+    mod_name, specs = analyse_module(module_path)
+    if not specs:
+        raise SystemExit("no public functions found in %s" % module_path)
+    name = mod_name.replace("_", "-") + "-server"
+    entry = name.replace("-", "_") + "_client.py"
+    specs_json = json.dumps(specs, indent=1, sort_keys=True)
+    os.makedirs(out_dir, exist_ok=True)
+    shutil.copyfile(module_path, os.path.join(out_dir, os.path.basename(module_path)))
+    write_file(os.path.join(out_dir, "server.py"),
+               SERVER_TEMPLATE.replace("@NAME@", name).replace("@MOD@", mod_name)
+               .replace("@SPECS@", specs_json))
+    write_file(os.path.join(out_dir, entry),
+               CLIENT_TEMPLATE.replace("@NAME@", name).replace("@MOD@", mod_name)
+               .replace("@SPECS@", specs_json))
+    write_file(os.path.join(out_dir, "SKILL.md"), skill_md_serve(name, mod_name, specs))
+    write_file(os.path.join(out_dir, "test_smoke.py"), SMOKE_TEMPLATE.replace("@ENTRY@", entry))
+    manifest = {
+        "name": name,
+        "path": "serve",
+        "entry": entry,
+        "server": "server.py",
+        "source": os.path.basename(module_path),
+        "commands": [s["cmd"] for s in specs],
+        "tier": "Bronze",
+    }
+    write_file(os.path.join(out_dir, "manifest.json"),
+               json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest
+
+
+# --------------------------------------------------------------------------
+# PROBE - introspect a live server -> endpoint map + generic client CLI
+# --------------------------------------------------------------------------
+
+def probe_server(base_url):
+    """Return a map dict describing whatever the live server exposes."""
+    base = base_url.rstrip("/")
+    info = {"base_url": base, "health": None, "commands": [], "operations": [],
+            "root": None}
+    status, health = http_json("GET", base + "/health")
+    if status == 200:
+        info["health"] = health
+    status, cmds = http_json("GET", base + "/commands")
+    if status == 200 and isinstance(cmds, dict):
+        info["commands"] = cmds.get("commands") or []
+    status, spec = http_json("GET", base + "/openapi.json")
+    if status == 200 and isinstance(spec, dict) and spec.get("paths"):
+        title, _base, ops = analyse_openapi_doc(spec)
+        info["operations"] = ops
+        info["openapi_title"] = title
+    status, root = http_json("GET", base + "/")
+    if status == 200:
+        info["root"] = root
+    if not info["commands"] and not info["operations"] and info["health"] is None:
+        raise SystemExit(
+            "probe found nothing at %s (no /health, /commands or /openapi.json); "
+            "is the server running?" % base)
+    return info
+
+
+def analyse_openapi_doc(spec):
+    """analyse_openapi() on an already-parsed spec dict."""
+    fd, path = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(spec, fh)
+        return analyse_openapi(path)
+    finally:
+        os.unlink(path)
+
+
+PROBE_CLIENT_TEMPLATE = '''#!/usr/bin/env python3
+"""@NAME@ - generic client for a probed server (clivane probe path).
+
+Base URL is baked in (override with --remote or $CLIVANE_REMOTE).
+Run-commands (from the server's /commands) accept --args '<json>' and
+POST /run; OpenAPI operations accept --params '<json>' and --body
+'<json>'; health/root are plain GETs.
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+BASE = "@BASE@"
+RUN_COMMANDS = json.loads(r"""@RUN@""")
+OPERATIONS = json.loads(r"""@OPS@""")
+
+
+def call(method, url, payload=None):
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json"
+    token = os.environ.get("CLIVANE_TOKEN")
+    if token:
+        headers["X-Clivane-Token"] = token
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            status, raw = resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, exc.read().decode("utf-8", "replace")
+    except Exception as exc:
+        print("error: cannot reach %s (%s)" % (url, exc), file=sys.stderr)
+        return None, 1
+    try:
+        return json.loads(raw), status
+    except Exception:
+        return raw, status
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="@NAME@",
+                                     description="Client for probed server @BASE@")
+    parser.add_argument("--remote",
+                        default=os.environ.get("CLIVANE_REMOTE", BASE))
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("health", help="GET /health")
+    sub.add_parser("root", help="GET /")
+    for cmd in RUN_COMMANDS:
+        p = sub.add_parser(cmd, help="POST /run %s" % cmd)
+        p.add_argument("--args", default="{}", help="JSON args object")
+        p.add_argument("--json", action="store_true")
+    for op in OPERATIONS:
+        p = sub.add_parser(op["cmd"], help="%s %s" % (op["method"], op["path"]))
+        p.add_argument("--params", default="{}", help="JSON path/query params")
+        if op["has_body"]:
+            p.add_argument("--body", default=None, help="JSON request body")
+        p.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if not ns.command:
+        parser.print_help()
+        return 2
+    base = ns.remote.rstrip("/")
+    if ns.command in ("health", "root"):
+        payload, status = call("GET", base + ("/health" if ns.command == "health" else "/"))
+        if payload is None:
+            return 1
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str)
+              if isinstance(payload, (dict, list)) else payload)
+        return 0 if status < 400 else 1
+    if ns.command in RUN_COMMANDS:
+        try:
+            args = json.loads(ns.args)
+        except Exception as exc:
+            print("error: --args is not valid JSON (%s)" % exc, file=sys.stderr)
+            return 1
+        payload, status = call("POST", base + "/run",
+                               {"command": ns.command, "args": args})
+        if payload is None:
+            return 1
+        if status >= 400:
+            print("error: %s" % (payload.get("error") if isinstance(payload, dict)
+                                 else payload), file=sys.stderr)
+            return 1
+        if ns.json:
+            print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        else:
+            result = payload.get("result") if isinstance(payload, dict) else payload
+            print(json.dumps(result, indent=2, sort_keys=True, default=str)
+                  if isinstance(result, (dict, list)) else result)
+        return 0
+    op = next(o for o in OPERATIONS if o["cmd"] == ns.command)
+    try:
+        params = json.loads(ns.params)
+    except Exception as exc:
+        print("error: --params is not valid JSON (%s)" % exc, file=sys.stderr)
+        return 1
+    path = op["path"]
+    query = {}
+    for prm in op["params"]:
+        if prm["name"] in params:
+            if prm["in"] == "path":
+                path = path.replace("{" + prm["name"] + "}",
+                                    urllib.parse.quote(str(params.pop(prm["name"]))))
+            elif prm["in"] == "query":
+                query[prm["name"]] = params.pop(prm["name"])
+    url = base + path
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    payload_body = None
+    if op["has_body"] and getattr(ns, "body", None):
+        try:
+            payload_body = json.loads(ns.body)
+        except Exception:
+            payload_body = ns.body
+    payload, status = call(op["method"], url, payload_body)
+    if payload is None:
+        return 1
+    if ns.json:
+        print(json.dumps({"status": status, "body": payload},
+                         indent=2, sort_keys=True, default=str))
+    else:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str)
+              if isinstance(payload, (dict, list)) else payload)
+    return 0 if status < 400 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def skill_md_probe(name, info):
+    lines = [
+        "# %s" % name,
+        "",
+        "Generic client for the live server at `%s` (clivane probe path)." % info["base_url"],
+        "The endpoint map below was captured by introspection, not by hand.",
+        "",
+        "## Endpoint map",
+        "",
+        "- `GET /health` -> %s" % ("responded" if info["health"] is not None else "not found"),
+        "- `GET /` -> %s" % ("responded" if info["root"] is not None else "not found"),
+    ]
+    if info["commands"]:
+        lines.append("- `GET /commands` + `POST /run` (clivane serve style):")
+        for spec in info["commands"]:
+            lines.append("  - `%s` - %s" % (spec["cmd"], spec.get("doc", "")))
+    if info["operations"]:
+        lines.append("- OpenAPI operations (from `/openapi.json`):")
+        for op in info["operations"]:
+            lines.append("  - `%s` - %s %s - %s"
+                         % (op["cmd"], op["method"], op["path"], op["doc"]))
+    lines += [
+        "",
+        "## Usage",
+        "",
+        "- Run-commands take `--args '<json>'` and POST `/run`.",
+        "- OpenAPI operations take `--params '<json>'` (path/query) and",
+        "  `--body '<json>'` where applicable.",
+        "- `--json` prints the full response envelope; `$CLIVANE_REMOTE`",
+        "  or `--remote` overrides the baked-in base URL.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_probe(base_url, out_dir):
+    info = probe_server(base_url)
+    netloc = re.sub(r"[^a-zA-Z0-9]+", "-", base_url.split("://", 1)[-1]).strip("-").lower()
+    name = "probe-" + netloc
+    entry = name.replace("-", "_") + ".py"
+    run_cmds = sorted(s["cmd"] for s in info["commands"])
+    commands = sorted(set(run_cmds + [o["cmd"] for o in info["operations"]]
+                          + ["health", "root"]))
+    os.makedirs(out_dir, exist_ok=True)
+    text = PROBE_CLIENT_TEMPLATE.replace("@NAME@", name)
+    text = text.replace("@BASE@", info["base_url"])
+    text = text.replace("@RUN@", json.dumps(run_cmds))
+    text = text.replace("@OPS@", json.dumps(info["operations"], indent=1, sort_keys=True))
+    write_file(os.path.join(out_dir, entry), text)
+    write_file(os.path.join(out_dir, "SKILL.md"), skill_md_probe(name, info))
+    write_file(os.path.join(out_dir, "test_smoke.py"), SMOKE_TEMPLATE.replace("@ENTRY@", entry))
+    manifest = {
+        "name": name,
+        "path": "probe",
+        "entry": entry,
+        "source": info["base_url"],
+        "commands": commands,
+        "tier": "Bronze",
+    }
+    write_file(os.path.join(out_dir, "manifest.json"),
+               json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest, info
+
+
+# --------------------------------------------------------------------------
 # VERIFY - Trace-Seal: golden traces, replayed and compared
 # --------------------------------------------------------------------------
 
@@ -674,6 +1578,52 @@ def normalise(text, pkg_dir):
     return "\n".join(out)
 
 
+@contextlib.contextmanager
+def pkg_runtime(work, manifest):
+    """Runtime context for probing a package copy.
+
+    Plain packages need nothing. `serve` packages get their generated
+    server started on an ephemeral localhost port, and the client calls
+    receive CLIVANE_REMOTE / CLIVANE_PORT pointing at it - so golden
+    traces cover real client<->server traffic while argv stays stable.
+    Yields the extra environment dict for run_cli calls.
+    """
+    if manifest.get("path") != "serve":
+        yield {}
+        return
+    port = free_port()
+    env = {"CLIVANE_PORT": str(port),
+           "CLIVANE_REMOTE": "http://127.0.0.1:%d" % port}
+    full_env = dict(os.environ)
+    full_env.update(env)
+    proc = subprocess.Popen(
+        [sys.executable, manifest.get("server", "server.py")],
+        cwd=work, env=full_env, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.time() + 10
+        while True:
+            try:
+                status, _ = http_json("GET", env["CLIVANE_REMOTE"] + "/health",
+                                      timeout=1)
+                if status == 200:
+                    break
+            except Exception:
+                pass
+            if proc.poll() is not None:
+                raise RuntimeError("generated server exited during startup")
+            if time.time() > deadline:
+                raise RuntimeError("generated server did not become healthy")
+            time.sleep(0.05)
+        yield env
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+
+
 def collect_trace(pkg_dir, manifest):
     """Run probe calls in a fresh temp copy; return the trace dict."""
     tmp = tempfile.mkdtemp(prefix="clivane-seal-")
@@ -681,14 +1631,15 @@ def collect_trace(pkg_dir, manifest):
     shutil.copytree(pkg_dir, work)
     records = []
     try:
-        for argv in probe_calls(work, manifest):
-            code, out, err = run_cli(work, manifest["entry"], argv)
-            records.append({
-                "argv": argv,
-                "exit_code": code,
-                "stdout": normalise(out, work),
-                "stderr_empty": not err.strip(),
-            })
+        with pkg_runtime(work, manifest) as env:
+            for argv in probe_calls(work, manifest):
+                code, out, err = run_cli(work, manifest["entry"], argv, env=env)
+                records.append({
+                    "argv": argv,
+                    "exit_code": code,
+                    "stdout": normalise(out, work),
+                    "stderr_empty": not err.strip(),
+                })
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return {"package": manifest["name"], "seal_version": SEAL_VERSION, "calls": records}
@@ -723,10 +1674,11 @@ def smoke_ok(pkg_dir, manifest):
     work = os.path.join(tmp, "pkg")
     try:
         shutil.copytree(pkg_dir, work)
-        for argv in probe_calls(work, manifest):
-            code, _, _ = run_cli(work, manifest["entry"], argv)
-            if code != 0:
-                return False
+        with pkg_runtime(work, manifest) as env:
+            for argv in probe_calls(work, manifest):
+                code, _, _ = run_cli(work, manifest["entry"], argv, env=env)
+                if code != 0:
+                    return False
         return True
     except Exception:
         return False
@@ -819,6 +1771,18 @@ def build_main_parser():
     o.add_argument("spec")
     o.add_argument("--out", required=True)
 
+    g = sub.add_parser("game", help="game module (clivane game contract) -> episode CLI")
+    g.add_argument("module")
+    g.add_argument("--out", required=True)
+
+    s = sub.add_parser("serve", help="Python module -> HTTP JSON server + remote client")
+    s.add_argument("module")
+    s.add_argument("--out", required=True)
+
+    pb = sub.add_parser("probe", help="introspect a live server -> endpoint map + client")
+    pb.add_argument("base_url")
+    pb.add_argument("--out", required=True)
+
     v = sub.add_parser("verify", help="Trace-Seal: record or replay golden traces")
     v.add_argument("dir")
     v.add_argument("--record", action="store_true", help="force re-recording the seal")
@@ -846,6 +1810,22 @@ def main(argv=None):
     if ns.command == "openapi":
         manifest = cmd_openapi(ns.spec, ns.out)
         print("generated %s -> %s (%d operations)" % (manifest["name"], ns.out, len(manifest["commands"])))
+        return 0
+    if ns.command == "game":
+        manifest = cmd_game(ns.module, ns.out)
+        print("generated game CLI %s -> %s (contract OK, %d commands)"
+              % (manifest["name"], ns.out, len(manifest["commands"])))
+        return 0
+    if ns.command == "serve":
+        manifest = cmd_serve(ns.module, ns.out)
+        print("generated server package %s -> %s (server.py + %s, %d commands)"
+              % (manifest["name"], ns.out, manifest["entry"], len(manifest["commands"])))
+        return 0
+    if ns.command == "probe":
+        manifest, info = cmd_probe(ns.base_url, ns.out)
+        print("probed %s -> %s (%d run commands, %d openapi operations)"
+              % (info["base_url"], ns.out,
+                 len(info["commands"]), len(info["operations"])))
         return 0
     if ns.command == "verify":
         status, detail = verify_package(ns.dir, record=ns.record)
