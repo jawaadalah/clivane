@@ -16,8 +16,8 @@
   <img src="https://img.shields.io/badge/LLM-not%20required-brightgreen" alt="no LLM">
   <img src="https://img.shields.io/badge/API%20key-none-brightgreen" alt="no API key">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0">
-  <img src="https://img.shields.io/badge/version-1.2.0-orange" alt="v1.2.0">
-  <img src="https://img.shields.io/badge/selftest-12%2F12%20passing-brightgreen" alt="selftest">
+  <img src="https://img.shields.io/badge/version-1.3.0-orange" alt="v1.3.0">
+  <img src="https://img.shields.io/badge/selftest-15%2F15%20passing-brightgreen" alt="selftest">
 </p>
 
 ---
@@ -41,7 +41,7 @@ byte-identical package, in about a second, for free:
 | **forge** | a Python module | a full CLI: one subcommand per public function |
 | **mirror** | an existing CLI tool | a wrapper that adds a structured JSON envelope |
 | **openapi** | an OpenAPI 3 JSON spec | one subcommand per `operationId` |
-| **game** *(new in v1.1.0)* | a game module obeying the game contract | a session episode CLI with replay verification — or, with `--fullstack` *(v1.2.0)*, a complete arena: session server + web UI + remote client + verified leaderboard |
+| **game** *(new in v1.1.0)* | a game module obeying the game contract | a session episode CLI with replay verification — or, with `--fullstack` *(v1.2.0)*, a complete arena: session server + web UI + remote client + verified leaderboard — plus a **safe autopilot** *(v1.3.0)* that lets bot strategies play whole episodes under hard guardrails |
 | **serve / probe** *(new in v1.1.0)* | a Python module / a live server | an HTTP JSON server + remote client / an endpoint map + generic client |
 
 …and one proof system for all five: **Trace-Seal**, golden traces that
@@ -55,7 +55,7 @@ No installation, no dependencies — just Python 3.10+:
 ```bash
 git clone https://github.com/jawaadalah/clivane
 cd clivane
-python3 clivane.py selftest        # 12/12 checks, runs in seconds
+python3 clivane.py selftest        # 15/15 checks, runs in seconds
 ```
 
 ### Path 1 — forge a Python module
@@ -115,6 +115,37 @@ CLIVANE_REMOTE=http://127.0.0.1:8800 \
 # -> the server replays the episode from its seed; only a reproduced
 #    score reaches the persistent leaderboard — claims are never trusted
 ```
+
+#### …or let a bot play it — safe autopilot (v1.3.0)
+
+Both game CLIs (local and arena client) carry an `autopilot` command.
+A strategy is just `choose(observe, legal_actions) -> action`; three
+deterministic ones are built in — `greedy` (1-step lookahead on a copy
+of the state), `bfs` (shortest plan to a win, bounded search) and
+`random` (seeded baseline) — and your own loads via `--strategy-file`:
+
+```bash
+python3 gemgrid_game_cli.py autopilot --strategy greedy --seed 7 --json
+# -> {"strategy": "greedy", "seed": 7, "steps": 8, "score": 30,
+#     "done": true, "stop_reason": "done", "verified": true}
+
+CLIVANE_REMOTE=http://127.0.0.1:8800 \
+  python3 gemgrid_game_arena_client.py autopilot --strategy bfs --seed 7
+# -> plays on the server as "autopilot-bfs"; finish + server replay
+#    put it on the leaderboard — the bot never submits a score itself
+```
+
+The guardrails are the feature. Around *any* strategy the engine
+enforces hard step/time budgets (`--max-steps`, `--max-seconds`),
+stall detection (observation unchanged 5 times in a row → stop),
+illegal-action abort (the action is never sent to the game) and
+exception containment (partial transcript saved, non-zero exit, no
+corrupt state). `--dry-run` projects a full episode with zero side
+effects — no session saved locally, no session created on the server.
+And the arena server defends itself independently of the client:
+sessions accept a server-side `max_steps` budget (breach → 403 and the
+session is aborted for good) and acts are rate-limited to
+20/second per session (429).
 
 ### Path 5 — serve a module over HTTP, probe a live server
 

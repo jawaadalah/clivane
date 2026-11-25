@@ -147,6 +147,96 @@ and Trace-Seal covers the arena end-to-end (the harness starts
 `game_server.py` on an ephemeral port in a fresh copy and replays the
 client calls, demo episode included, against it).
 
+### Safe autopilot (v1.3.0)
+
+Both game CLIs — the local episode CLI and the arena remote client —
+carry an `autopilot` command that hands a whole episode to a strategy
+under guardrails. This is the sanctioned way to let bots play: bounded,
+observable, and unable to fake results.
+
+**Strategy contract.** A strategy is
+`choose(observe, legal_actions) -> action` — nothing more. It receives
+a deep copy of the observation (it cannot mutate engine state) and the
+current legal actions. Three deterministic built-ins:
+
+- `greedy` — 1-step lookahead: every legal action is simulated on a
+  *deep copy* of the current state (planning never touches the real
+  state) and scored `(reward, done, -distance-to-nearest-target)`,
+  where the distance term applies only when the observation exposes
+  `player` + `gems`/`targets`; legal order is the final deterministic
+  tie-break.
+- `bfs` — breadth-first search for the shortest plan to a done state
+  (a `won` terminal is preferred over a merely-done one), bounded by
+  `--bfs-max-nodes` (default 20.000); volatile counters (`steps`,
+  `moves_left`) are dropped from the de-duplication key. When the plan
+  runs out, greedy takes over.
+- `random` — seeded baseline (`random.Random(seed)`), for comparison.
+
+Custom strategies are plain Python files defining `choose()`, loaded
+with `--strategy-file`. Built-in `greedy`/`bfs` plan against the game
+module: locally that is the real state; in the arena client it is a
+*shadow* copy bundled with the package — the server remains
+authoritative, every act executes server-side, and if the server's
+observation ever diverges from the shadow the run aborts (the game is
+not deterministic, so its results cannot be trusted).
+
+**The engine's guardrails** (identical for every strategy, both
+drivers). Command shape:
+
+```
+autopilot [--strategy greedy|bfs|random] [--strategy-file f.py]
+          [--seed N] [--max-steps 200] [--max-seconds 60]
+          [--target-score N] [--stall-limit 5] [--dry-run]
+```
+
+- *Budgets are hard.* Steps and wall-clock seconds are checked before
+  every action; hitting one stops the run with `stop_reason`
+  `step_budget` / `time_budget`, the episode is closed cleanly and the
+  transcript is still persisted.
+- *Stall detection.* If `observe()` is unchanged `--stall-limit`
+  times in a row (default 5), the run stops with `stall` — a bot
+  spinning in place burns nothing.
+- *Illegal actions are never forwarded.* A returned action outside
+  `legal_actions` aborts the run immediately (`illegal_action`,
+  exit 1); the game never sees it.
+- *Exceptions are contained.* A raise in `choose()` or in `step()`
+  aborts safely (`error`, exit 1, message in the result): the partial
+  transcript is persisted and no half-stepped state is saved — the
+  local driver only assigns the new state after `step()` returns.
+- *Dry-run is pure.* `--dry-run` plays the full episode in simulation:
+  locally it never writes `session.json`; in the arena it never even
+  contacts the server (no session, no leaderboard change). The result
+  is a projection and reports `verified: false`, `dry_run: true`.
+- *Settle by replay only.* After a non-dry-run episode ends `done`,
+  the result is verified — locally by replaying the transcript,
+  in the arena by the server's `finish` (server replay). Autopilot
+  has no path that writes a score: in the arena its session is
+  created as player `autopilot-<strategy>`, and the leaderboard entry,
+  if any, is produced exclusively by the server's replay.
+
+Result JSON (always printed):
+`{strategy, seed, steps, score, done, stop_reason, verified}` with
+`stop_reason` ∈ `done | target_reached | step_budget | time_budget |
+stall | illegal_action | error`.
+
+**Server-side enforcement.** The arena does not trust autopilot — or
+any client — to bound itself. `POST /sessions` accepts `max_steps`;
+an act beyond that budget gets 403 and the session is marked
+`aborted` permanently (further acts keep getting 403). Acts are also
+rate-limited per session to 20/second (429) — loose enough for a
+human clicking, tight enough to strangle a wild loop. The autopilot
+client passes its own `--max-steps` as the server budget, so its
+client-side stop normally fires first; the server cap is the backstop
+for rogue clients.
+
+**Ethics / scope.** Autopilot exists for games you own or run locally:
+benchmarking agents, testing solvers, filling your own arena's
+leaderboard with honestly-earned bot scores. It is not a tool for
+flooding third-party services — the rate limit and budgets are
+designed so a clivane arena cannot be abused that way either, and
+pointing an unbounded bot at someone else's game is out of scope by
+design (there is deliberately no unbounded mode).
+
 ## Path 5 — server (new: serve + probe, two directions)
 
 ### serve — module -> HTTP server + remote client

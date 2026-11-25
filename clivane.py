@@ -788,6 +788,7 @@ from a seed and checks the final state matches the recorded session
 """
 import argparse
 import importlib
+import importlib.util
 import json
 import os
 import sys
@@ -835,6 +836,8 @@ def play(seed, actions):
     return state, total, True
 
 
+@AUTOPILOT@
+
 def build_parser():
     p = argparse.ArgumentParser(prog="@NAME@", description="Episode CLI for @MOD@")
     sub = p.add_subparsers(dest="command")
@@ -854,6 +857,7 @@ def build_parser():
     r.add_argument("--seed", type=int, required=True)
     r.add_argument("--actions", required=True, help="comma-separated actions")
     r.add_argument("--json", action="store_true")
+    add_autopilot_args(sub)
     return p
 
 
@@ -891,6 +895,8 @@ def main(argv=None):
                         "final_observe": MODULE.observe(final),
                         "verified": verified}, ns.json)
         return 0 if verified else 1
+    if ns.command == "autopilot":
+        return run_autopilot_command(ns)
     sess = load_session()
     state = sess["state"]
     if ns.command == "observe":
@@ -928,6 +934,491 @@ if __name__ == "__main__":
 '''
 
 
+# --------------------------------------------------------------------------
+# SAFE AUTOPILOT (v1.3.0) - shared engine text embedded into BOTH game
+# CLIs (local episode CLI and arena remote client).
+#
+# A strategy is choose(observe, legal_actions) -> action. Built-ins:
+#   greedy - 1-step lookahead on a deep copy of the state (the real
+#            state is never touched by planning); key = (reward, done,
+#            -distance-to-nearest-target) with legal order as the final
+#            deterministic tie-break.
+#   bfs    - shortest plan to a done/won state over a bounded node
+#            budget, then executed step by step (greedy fallback).
+#   random - seeded baseline.
+# Custom strategies load from --strategy-file (same choose() contract).
+#
+# The engine enforces the guardrails around ANY strategy: hard step and
+# time budgets, stall detection (observation unchanged K times in a
+# row), illegal-action abort (the action is never sent to the game),
+# exception containment (partial transcript still persisted, non-zero
+# exit, no corrupt state), dry-run (pure simulation, nothing saved,
+# nothing finished), and settle-by-replay - the ONLY way a score is
+# ever verified. Autopilot can never write a score directly.
+# --------------------------------------------------------------------------
+
+AUTOPILOT_COMMON = '''
+
+# ---------------------------------------------------------------------------
+# Safe autopilot (clivane) - strategies drive an episode under hard
+# guardrails: step/time budgets, stall detection, illegal-action abort,
+# exception containment, dry-run simulation, settle-by-replay only.
+# ---------------------------------------------------------------------------
+import copy as _copy
+import random as _random
+import time as _time
+
+
+def _bfs_key(state):
+    # Volatile counters would defeat de-duplication; drop the usual ones.
+    trimmed = {k: v for k, v in state.items()
+               if k not in ("steps", "moves_left")}
+    return json.dumps(trimmed, sort_keys=True, default=str)
+
+
+def _bfs_plan(module, start, max_nodes):
+    """Shortest action plan to a done (preferably won) state, or []."""
+    from collections import deque
+    start = _copy.deepcopy(start)
+    seen = {_bfs_key(start)}
+    queue = deque([(start, [])])
+    fallback = None
+    nodes = 0
+    while queue:
+        state, path = queue.popleft()
+        nodes += 1
+        if nodes > max_nodes:
+            break
+        for action in module.legal_actions(state):
+            nxt, _r, done, _i = module.step(_copy.deepcopy(state), action)
+            npath = path + [action]
+            if done:
+                if module.observe(nxt).get("won", True):
+                    return npath
+                if fallback is None:
+                    fallback = npath
+                continue
+            key = _bfs_key(nxt)
+            if key not in seen:
+                seen.add(key)
+                queue.append((nxt, npath))
+    return fallback or []
+
+
+def _target_distance(observe):
+    """Manhattan distance player -> nearest gem/target, else None."""
+    player = observe.get("player")
+    targets = observe.get("gems") or observe.get("targets")
+    if (isinstance(player, (list, tuple)) and len(player) == 2
+            and isinstance(targets, list) and targets):
+        try:
+            return min(abs(player[0] - t[0]) + abs(player[1] - t[1])
+                       for t in targets)
+        except Exception:
+            return None
+    return None
+
+
+def _make_choose(name, module, planning_state, seed, max_nodes):
+    if name == "random":
+        rng = _random.Random(seed)
+
+        def choose_random(observe, legal):
+            return rng.choice(list(legal))
+
+        return choose_random
+    if name == "greedy":
+
+        def choose_greedy(observe, legal):
+            state = planning_state()
+            if module is None or state is None:
+                raise RuntimeError("greedy needs the game module for lookahead")
+            best = None
+            best_key = None
+            for action in legal:
+                nxt, reward, done, _i = module.step(
+                    _copy.deepcopy(state), action)
+                dist = _target_distance(module.observe(nxt))
+                key = (reward, 1 if done else 0,
+                       -(dist if dist is not None else 0))
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best = action
+            return best
+
+        return choose_greedy
+    if name == "bfs":
+        plan = {"actions": None}
+
+        def choose_bfs(observe, legal):
+            if plan["actions"] is None:
+                state = planning_state()
+                if module is None or state is None:
+                    raise RuntimeError("bfs needs the game module for planning")
+                plan["actions"] = _bfs_plan(module, state, max_nodes)
+            if plan["actions"]:
+                return plan["actions"].pop(0)
+            return _make_choose("greedy", module, planning_state,
+                                seed, max_nodes)(observe, legal)
+
+        return choose_bfs
+    raise RuntimeError("unknown strategy: %s" % name)
+
+
+def _load_strategy_file(path):
+    spec = importlib.util.spec_from_file_location("clivane_user_strategy",
+                                                  path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    choose = getattr(mod, "choose", None)
+    if not callable(choose):
+        raise RuntimeError(
+            "strategy file %s must define choose(observe, legal_actions)"
+            % path)
+    return choose
+
+
+def run_autopilot(driver, choose, strategy_name, seed, max_steps,
+                  max_seconds, target_score, stall_limit, dry_run):
+    """Drive one episode through `driver` under the guardrails.
+
+    Returns (result_dict, exit_code). The transcript is persisted via
+    driver.persist() on every non-dry-run exit path (aborts included);
+    driver.settle() (replay verification) runs only for done episodes.
+    Nothing here can write a score anywhere.
+    """
+    started = _time.monotonic()
+    steps = 0
+    total_reward = 0
+    stop_reason = None
+    error = None
+    prev_key = json.dumps(driver.obs_now(), sort_keys=True, default=str)
+    unchanged = 0
+    while True:
+        obs = driver.obs_now()
+        if driver.done_now():
+            stop_reason = "done"
+            break
+        cur_score = obs.get("score")
+        if (target_score is not None
+                and isinstance(cur_score, (int, float))
+                and not isinstance(cur_score, bool)
+                and cur_score >= target_score):
+            stop_reason = "target_reached"
+            break
+        if steps >= max_steps:
+            stop_reason = "step_budget"
+            break
+        if _time.monotonic() - started > max_seconds:
+            stop_reason = "time_budget"
+            break
+        legal = driver.legal()
+        if not legal:
+            stop_reason = "error"
+            error = "no legal actions but the episode is not done"
+            break
+        try:
+            action = choose(_copy.deepcopy(obs), list(legal))
+        except Exception as exc:
+            stop_reason = "error"
+            error = "strategy raised: %s" % exc
+            break
+        if action not in legal:
+            stop_reason = "illegal_action"
+            error = ("strategy returned an action outside "
+                     "legal_actions: %r" % (action,))
+            break
+        try:
+            obs, reward, done, _info = driver.act(action)
+        except Exception as exc:
+            stop_reason = "error"
+            error = "step failed: %s" % exc
+            break
+        steps += 1
+        if isinstance(reward, (int, float)) and not isinstance(reward, bool):
+            total_reward += reward
+        if done:
+            stop_reason = "done"
+            break
+        obs_score = obs.get("score")
+        if (target_score is not None
+                and isinstance(obs_score, (int, float))
+                and not isinstance(obs_score, bool)
+                and obs_score >= target_score):
+            stop_reason = "target_reached"
+            break
+        key = json.dumps(obs, sort_keys=True, default=str)
+        if key == prev_key:
+            unchanged += 1
+        else:
+            unchanged = 0
+            prev_key = key
+        if unchanged >= stall_limit:
+            stop_reason = "stall"
+            break
+    final_obs = driver.obs_now()
+    final_score = final_obs.get("score")
+    if not (isinstance(final_score, (int, float))
+            and not isinstance(final_score, bool)):
+        final_score = total_reward
+    verified = False
+    if not dry_run:
+        try:
+            driver.persist()
+        except Exception:
+            pass
+        if driver.done_now():
+            try:
+                verified = bool(driver.settle())
+            except Exception:
+                verified = False
+    result = {"strategy": strategy_name, "seed": seed, "steps": steps,
+              "score": final_score, "done": bool(driver.done_now()),
+              "stop_reason": stop_reason, "verified": verified}
+    if dry_run:
+        result["dry_run"] = True
+    if error:
+        result["error"] = error
+    code = 1 if stop_reason in ("error", "illegal_action") else 0
+    return result, code
+
+
+def add_autopilot_args(sub):
+    ap = sub.add_parser("autopilot",
+                        help="let a strategy play an episode, safely")
+    ap.add_argument("--strategy", default="greedy",
+                    choices=["greedy", "bfs", "random"])
+    ap.add_argument("--strategy-file",
+                    help="Python file defining choose(observe, legal_actions)")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--max-steps", type=int, default=200)
+    ap.add_argument("--max-seconds", type=float, default=60)
+    ap.add_argument("--target-score", type=float, default=None)
+    ap.add_argument("--stall-limit", type=int, default=5)
+    ap.add_argument("--bfs-max-nodes", type=int, default=20000)
+    ap.add_argument("--dry-run", action="store_true",
+                    help="simulate only: no session saved, no finish")
+    ap.add_argument("--json", action="store_true")
+    return ap
+'''
+
+
+AUTOPILOT_LOCAL_GLUE = '''
+
+class _LocalDriver:
+    """Autopilot driver over the local module (no HTTP)."""
+
+    def __init__(self, seed, persist_enabled):
+        self.seed = seed
+        self.persist_enabled = persist_enabled
+        self.state = MODULE.new_game(seed)
+        self.transcript = []
+        self.last_reward = None
+        self.done = False
+
+    def obs_now(self):
+        return MODULE.observe(self.state)
+
+    def legal(self):
+        return MODULE.legal_actions(self.state)
+
+    def act(self, action):
+        self.state, reward, done, info = MODULE.step(self.state, action)
+        self.done = bool(done)
+        self.last_reward = reward
+        self.transcript.append(action)
+        return MODULE.observe(self.state), reward, self.done, info
+
+    def done_now(self):
+        return self.done
+
+    def planning_state(self):
+        return self.state
+
+    def persist(self):
+        if self.persist_enabled:
+            save_session({"seed": self.seed, "state": self.state,
+                          "actions": list(self.transcript),
+                          "last_reward": self.last_reward,
+                          "done": self.done})
+
+    def settle(self):
+        final, _total, ok = play(self.seed, list(self.transcript))
+        return bool(ok and final == self.state)
+
+
+def run_autopilot_command(ns):
+    driver = _LocalDriver(ns.seed, persist_enabled=not ns.dry_run)
+    if ns.strategy_file:
+        try:
+            choose = _load_strategy_file(ns.strategy_file)
+        except Exception as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 1
+        strategy_name = "file:" + os.path.basename(ns.strategy_file)
+    else:
+        choose = _make_choose(ns.strategy, MODULE, driver.planning_state,
+                              ns.seed, ns.bfs_max_nodes)
+        strategy_name = ns.strategy
+    result, code = run_autopilot(driver, choose, strategy_name, ns.seed,
+                                 ns.max_steps, ns.max_seconds,
+                                 ns.target_score, ns.stall_limit,
+                                 ns.dry_run)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return code
+
+'''
+
+
+AUTOPILOT_REMOTE_GLUE = '''
+
+def _call_safe(remote, method, path, payload=None):
+    """call() that raises RuntimeError instead of SystemExit."""
+    try:
+        return call(remote, method, path, payload)
+    except SystemExit:
+        raise RuntimeError("arena request failed: %s %s" % (method, path))
+
+
+class _RemoteDriver:
+    """Autopilot driver over HTTP.
+
+    Planning (greedy/bfs lookahead) uses a local shadow copy of the
+    game module bundled in this package; the server stays
+    authoritative: every act executes server-side and the returned
+    observation must match the shadow, else the run aborts.
+    """
+
+    def __init__(self, remote, seed, player, max_steps):
+        self.remote = remote
+        created = _call_safe(remote, "POST", "/sessions",
+                             {"seed": seed, "player": player,
+                              "max_steps": max_steps})
+        self.sid = created["id"]
+        self.obs = created["observe"]
+        self.done = bool(created["done"])
+        self.transcript = []
+        self.module = None
+        self.shadow = None
+        try:
+            self.module = importlib.import_module("@MOD@")
+            self.shadow = self.module.new_game(seed)
+        except Exception:
+            self.module = None
+            self.shadow = None
+
+    def obs_now(self):
+        return self.obs
+
+    def legal(self):
+        res = _call_safe(self.remote, "GET",
+                         "/sessions/%s/actions" % self.sid)
+        return res["actions"]
+
+    def act(self, action):
+        res = _call_safe(self.remote, "POST",
+                         "/sessions/%s/act" % self.sid, {"action": action})
+        if self.module is not None:
+            self.shadow, _r, _d, _i = self.module.step(self.shadow, action)
+            if self.module.observe(self.shadow) != res["observe"]:
+                raise RuntimeError(
+                    "arena observation diverged from the local plan "
+                    "(non-deterministic game?)")
+        self.obs = res["observe"]
+        self.done = bool(res["done"])
+        self.transcript.append(action)
+        return res["observe"], res["reward"], self.done, res.get("info", {})
+
+    def done_now(self):
+        return self.done
+
+    def planning_state(self):
+        return self.shadow
+
+    def persist(self):
+        pass  # the transcript lives server-side in the session
+
+    def settle(self):
+        try:
+            res = _call_safe(self.remote, "POST",
+                             "/sessions/%s/finish" % self.sid, {})
+        except Exception:
+            return False
+        return bool(res.get("verified"))
+
+
+class _SimDriver:
+    """Dry-run driver: full local simulation, zero server contact."""
+
+    def __init__(self, seed):
+        self.module = importlib.import_module("@MOD@")
+        self.state = self.module.new_game(seed)
+        self.done = False
+
+    def obs_now(self):
+        return self.module.observe(self.state)
+
+    def legal(self):
+        return self.module.legal_actions(self.state)
+
+    def act(self, action):
+        self.state, reward, done, info = self.module.step(self.state,
+                                                          action)
+        self.done = bool(done)
+        return self.module.observe(self.state), reward, self.done, info
+
+    def done_now(self):
+        return self.done
+
+    def planning_state(self):
+        return self.state
+
+    def persist(self):
+        pass
+
+    def settle(self):
+        return False
+
+
+def run_autopilot_command(ns):
+    if ns.dry_run:
+        try:
+            driver = _SimDriver(ns.seed)
+        except Exception as exc:
+            print("error: dry-run needs the bundled game module (%s)"
+                  % exc, file=sys.stderr)
+            return 1
+        module = driver.module
+    else:
+        try:
+            driver = _RemoteDriver(
+                ns.remote, ns.seed,
+                ns.player or ("autopilot-%s" % ns.strategy), ns.max_steps)
+        except Exception as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 1
+        module = driver.module
+    if ns.strategy_file:
+        try:
+            choose = _load_strategy_file(ns.strategy_file)
+        except Exception as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 1
+        strategy_name = "file:" + os.path.basename(ns.strategy_file)
+    else:
+        choose = _make_choose(ns.strategy, module, driver.planning_state,
+                              ns.seed, ns.bfs_max_nodes)
+        strategy_name = ns.strategy
+    result, code = run_autopilot(driver, choose, strategy_name, ns.seed,
+                                 ns.max_steps, ns.max_seconds,
+                                 ns.target_score, ns.stall_limit,
+                                 ns.dry_run)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return code
+
+'''
+
+
 def skill_md_game(name, mod_name):
     return "\n".join([
         "# %s" % name,
@@ -947,6 +1438,28 @@ def skill_md_game(name, mod_name):
         "- `status [--json]` - seed, steps taken, done flag, last reward.",
         "- `replay --seed N --actions a,b,c [--json]` - re-play from scratch",
         "  and verify the final state is identical (seed determinism).",
+        "- `autopilot [--strategy greedy|bfs|random] [--strategy-file f.py]`",
+        "  `[--seed N] [--max-steps N] [--max-seconds N] [--target-score N]`",
+        "  `[--dry-run]` - let a strategy play a whole episode under hard",
+        "  guardrails (see below); prints the result JSON.",
+        "",
+        "## Safe autopilot",
+        "",
+        "A strategy is `choose(observe, legal_actions) -> action`. Built-ins:",
+        "`greedy` (1-step lookahead on a copy of the state), `bfs` (shortest",
+        "plan to a won/done state, bounded node budget), `random` (seeded",
+        "baseline). A custom file with `choose()` loads via `--strategy-file`.",
+        "The engine enforces, for every strategy: hard step/time budgets,",
+        "stall detection (observation unchanged `--stall-limit` times in a",
+        "row -> stop), illegal-action abort (the action is never sent to",
+        "the game), and exception containment (partial transcript saved,",
+        "non-zero exit, no corrupt state). `--dry-run` simulates the whole",
+        "episode without saving a session. A finished episode is settled",
+        "by replay: the result's `verified` is true only when a fresh",
+        "replay reproduces it. Result JSON: `{strategy, seed, steps,",
+        "score, done, stop_reason, verified}` with `stop_reason` one of",
+        "`done | target_reached | step_budget | time_budget | stall |`",
+        "`illegal_action | error`.",
         "",
         "## Conventions",
         "",
@@ -968,8 +1481,10 @@ def cmd_game(module_path, out_dir, fullstack=False):
     entry = name.replace("-", "_") + ".py"
     os.makedirs(out_dir, exist_ok=True)
     shutil.copyfile(module_path, os.path.join(out_dir, os.path.basename(module_path)))
+    cli_text = GAME_TEMPLATE.replace(
+        "@AUTOPILOT@", AUTOPILOT_COMMON + AUTOPILOT_LOCAL_GLUE)
     write_file(os.path.join(out_dir, entry),
-               GAME_TEMPLATE.replace("@NAME@", name).replace("@MOD@", mod_name))
+               cli_text.replace("@NAME@", name).replace("@MOD@", mod_name))
     write_file(os.path.join(out_dir, "SKILL.md"), skill_md_game(name, mod_name))
     write_file(os.path.join(out_dir, "test_smoke.py"), SMOKE_TEMPLATE.replace("@ENTRY@", entry))
     manifest = {
@@ -977,7 +1492,8 @@ def cmd_game(module_path, out_dir, fullstack=False):
         "path": "game",
         "entry": entry,
         "source": os.path.basename(module_path),
-        "commands": ["act", "actions", "new", "observe", "replay", "status"],
+        "commands": ["act", "actions", "autopilot", "new", "observe",
+                     "replay", "status"],
         "tier": "Bronze",
     }
     write_file(os.path.join(out_dir, "manifest.json"),
@@ -1017,6 +1533,11 @@ Three layers, one process (stdlib http.server only):
 Binds 127.0.0.1 unless --host/CLIVANE_HOST says otherwise; a non-local
 bind prints a warning. Set --token or CLIVANE_TOKEN to require the
 X-Clivane-Token header on POST endpoints.
+
+Bot guardrails (enforced server-side, whatever the client sends):
+POST /sessions accepts max_steps; an act beyond that budget aborts the
+session (403, and the session stays aborted), and acts are rate-limited
+to 20/second per session (429) - loose for humans, tight for wild loops.
 """
 import argparse
 import importlib
@@ -1025,6 +1546,7 @@ import json
 import os
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1078,7 +1600,8 @@ def replay(seed, actions):
 def public_session(sess):
     return {"id": sess["id"], "seed": sess["seed"], "player": sess["player"],
             "steps": len(sess["actions"]), "done": sess["done"],
-            "finished": sess["finished"],
+            "finished": sess["finished"], "aborted": sess["aborted"],
+            "max_steps": sess["max_steps"],
             "observe": MODULE.observe(sess["state"]),
             "actions": MODULE.legal_actions(sess["state"])}
 
@@ -1168,17 +1691,25 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["sessions"]:
             seed = payload.get("seed", 0)
             player = payload.get("player", "player")
+            max_steps = payload.get("max_steps")
             if not isinstance(seed, int) or isinstance(seed, bool):
                 self._send(400, {"error": "seed must be an integer"})
                 return
             if not isinstance(player, str) or not player:
                 self._send(400, {"error": "player must be a non-empty string"})
                 return
+            if max_steps is not None and (
+                    not isinstance(max_steps, int)
+                    or isinstance(max_steps, bool) or max_steps <= 0):
+                self._send(400, {"error": "max_steps must be a positive integer"})
+                return
             with LOCK:
                 sid = "s%d" % next(IDS)
                 sess = {"id": sid, "seed": seed, "player": player,
                         "state": MODULE.new_game(seed), "actions": [],
-                        "total_reward": 0, "done": False, "finished": False}
+                        "total_reward": 0, "done": False, "finished": False,
+                        "max_steps": max_steps, "aborted": False,
+                        "act_times": []}
                 SESSIONS[sid] = sess
                 out = public_session(sess)
             self._send(201, out)
@@ -1195,6 +1726,25 @@ class Handler(BaseHTTPRequestHandler):
                 if sess["done"]:
                     self._send(400, {"error": "episode is done"})
                     return
+                # Server-side guardrails (v1.3.0): a rogue client cannot
+                # run a session without bounds, whatever it sends.
+                if sess["aborted"]:
+                    self._send(403, {"error": "session aborted by the server "
+                                     "(step budget exceeded)"})
+                    return
+                if (sess["max_steps"] is not None
+                        and len(sess["actions"]) >= sess["max_steps"]):
+                    sess["aborted"] = True
+                    self._send(403, {"error": "server-side step budget "
+                                     "exceeded; session aborted"})
+                    return
+                now = time.monotonic()
+                sess["act_times"] = [t for t in sess["act_times"]
+                                     if now - t < 1.0]
+                if len(sess["act_times"]) >= 20:
+                    self._send(429, {"error": "rate limit: over 20 "
+                                     "actions/second on this session"})
+                    return
                 legal = MODULE.legal_actions(sess["state"])
                 if action not in legal:
                     self._send(400, {"error": "illegal action: %r (legal: %s)"
@@ -1205,6 +1755,7 @@ class Handler(BaseHTTPRequestHandler):
                 sess["actions"].append(action)
                 sess["total_reward"] += reward
                 sess["done"] = bool(done)
+                sess["act_times"].append(time.monotonic())
             self._send(200, {"session": sess["id"],
                              "observe": MODULE.observe(state),
                              "reward": reward, "done": bool(done),
@@ -1277,12 +1828,15 @@ leaderboard, but every call is HTTP to the arena server. Base URL:
 $CLIVANE_TOKEN is sent as X-Clivane-Token.
 """
 import argparse
+import importlib
+import importlib.util
 import json
 import os
 import sys
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_REMOTE = "http://127.0.0.1:8800"
 
 
@@ -1321,6 +1875,8 @@ def emit(command, result, as_json):
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
 
 
+@AUTOPILOT@
+
 def build_parser():
     p = argparse.ArgumentParser(prog="@NAME@",
                                 description="Remote client for the @MOD@ arena")
@@ -1344,6 +1900,9 @@ def build_parser():
     t.add_argument("--json", action="store_true")
     lb = sub.add_parser("leaderboard", help="verified scores, best first")
     lb.add_argument("--json", action="store_true")
+    ap = add_autopilot_args(sub)
+    ap.add_argument("--player", default=None,
+                    help="leaderboard name (default: autopilot-<strategy>)")
     return p
 
 
@@ -1353,6 +1912,8 @@ def main(argv=None):
     if not ns.command:
         parser.print_help()
         return 2
+    if ns.command == "autopilot":
+        return run_autopilot_command(ns)
     if ns.command == "new":
         result = call(ns.remote, "POST", "/sessions",
                       {"seed": ns.seed, "player": ns.player})
@@ -1594,7 +2155,7 @@ def skill_md_game_fullstack(name, mod_name):
         "|---|---|---|",
         "| GET | `/` | the web UI (static, no dependencies) |",
         "| GET | `/health` | `{\"status\": \"ok\"}` |",
-        "| POST | `/sessions` | `{\"seed\": N, \"player\": \"name\"}` -> new isolated session |",
+        "| POST | `/sessions` | `{\"seed\": N, \"player\": \"name\", \"max_steps\": M?}` -> new isolated session (server-enforced step budget) |",
         "| GET | `/sessions` | list live sessions |",
         "| GET | `/sessions/<id>/observe` | current observation |",
         "| GET | `/sessions/<id>/actions` | legal actions now |",
@@ -1623,6 +2184,28 @@ def skill_md_game_fullstack(name, mod_name):
         "- A session can be finished once; unfinished or non-done",
         "  episodes are rejected (400).",
         "",
+        "## Safe autopilot (bots welcome, bounds enforced)",
+        "",
+        "The client CLI has an `autopilot` command: a strategy",
+        "(`greedy` | `bfs` | `random`, or `--strategy-file` with a",
+        "`choose(observe, legal_actions)` function) plays a whole episode",
+        "under hard budgets (`--max-steps`, `--max-seconds`), stall",
+        "detection, illegal-action abort and exception containment.",
+        "Planning uses a local shadow copy of the bundled game module;",
+        "the server stays authoritative and any observation divergence",
+        "aborts the run. `--dry-run` simulates locally with zero server",
+        "contact: no session is created, nothing reaches the leaderboard.",
+        "When an episode finishes, autopilot calls `finish` - the score",
+        "still comes only from the server's replay, never from the bot.",
+        "Sessions are created as player `autopilot-<strategy>` unless",
+        "`--player` says otherwise.",
+        "",
+        "Server-side, independent of the client: `POST /sessions`",
+        "accepts `max_steps`; an act past that budget aborts the session",
+        "(403, permanently for that session), and acts are rate-limited",
+        "to 20/second per session (429). A rogue bot cannot run unbounded",
+        "against this server.",
+        "",
         "## Security",
         "",
         "- Default bind is localhost only; a non-local bind warns loudly.",
@@ -1646,8 +2229,10 @@ def cmd_game_fullstack(module_path, out_dir):
                ARENA_SERVER_TEMPLATE.replace("@NAME@", name).replace("@MOD@", mod_name))
     write_file(os.path.join(out_dir, "web", "index.html"),
                ARENA_WEB_HTML.replace("@NAME@", name))
+    client_text = ARENA_CLIENT_TEMPLATE.replace(
+        "@AUTOPILOT@", AUTOPILOT_COMMON + AUTOPILOT_REMOTE_GLUE)
     write_file(os.path.join(out_dir, entry),
-               ARENA_CLIENT_TEMPLATE.replace("@NAME@", name).replace("@MOD@", mod_name))
+               client_text.replace("@NAME@", name).replace("@MOD@", mod_name))
     write_file(os.path.join(out_dir, "SKILL.md"), skill_md_game_fullstack(name, mod_name))
     write_file(os.path.join(out_dir, "test_smoke.py"), SMOKE_TEMPLATE.replace("@ENTRY@", entry))
     manifest = {
@@ -1657,7 +2242,8 @@ def cmd_game_fullstack(module_path, out_dir):
         "entry": entry,
         "server": "game_server.py",
         "source": os.path.basename(module_path),
-        "commands": ["act", "actions", "finish", "leaderboard", "new", "observe"],
+        "commands": ["act", "actions", "autopilot", "finish", "leaderboard",
+                     "new", "observe"],
         "tier": "Bronze",
     }
     write_file(os.path.join(out_dir, "manifest.json"),

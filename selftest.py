@@ -8,7 +8,10 @@ game (contract valid/invalid, deterministic episodes, replay tamper),
 serve (live server: health/commands/run, remote client, token, probe),
 game fullstack (arena: UI 200, parallel session isolation, illegal act
 400, finish replay-verification, persistent verified leaderboard,
-remote client, token), and the committed examples registry
+remote client, token), safe autopilot (strategies greedy/bfs/random,
+budgets, target, dry-run; abuse: stall, illegal action, strategy and
+step exceptions; arena autopilot + server-side step budget abort and
+per-session rate limit), and the committed examples registry
 (6 packages, all Gold).
 """
 
@@ -287,8 +290,8 @@ def t_game_contract(tmp):
     assert r.returncode == 0, r.stderr
     manifest = clivane.read_json(os.path.join(out, "manifest.json"))
     assert manifest["path"] == "game", manifest
-    assert manifest["commands"] == ["act", "actions", "new", "observe",
-                                    "replay", "status"], manifest["commands"]
+    assert manifest["commands"] == ["act", "actions", "autopilot", "new",
+                                    "observe", "replay", "status"], manifest["commands"]
     for label, source in (("missing-step", BAD_GAME), ("wrong-reward", WRONG_GAME)):
         bad = os.path.join(tmp, label + ".py")
         with open(bad, "w") as fh:
@@ -445,8 +448,8 @@ def t_game_fullstack_generate(tmp):
     assert manifest["path"] == "game-fullstack", manifest
     assert manifest["mode"] == "fullstack", manifest
     assert manifest["server"] == "game_server.py", manifest
-    assert manifest["commands"] == ["act", "actions", "finish", "leaderboard",
-                                    "new", "observe"], manifest["commands"]
+    assert manifest["commands"] == ["act", "actions", "autopilot", "finish",
+                                    "leaderboard", "new", "observe"], manifest["commands"]
     for rel in ("game_server.py", "web/index.html", "SKILL.md",
                 "gemgrid_game.py", manifest["entry"], "test_smoke.py"):
         assert os.path.isfile(os.path.join(out, rel)), rel
@@ -580,6 +583,246 @@ def t_game_fullstack_live(tmp):
         proc.wait(timeout=5)
 
 
+WAIT_GAME = '''
+def new_game(seed):
+    return {"phase": "waiting", "ticks": 0, "done": False, "score": 0}
+
+
+def legal_actions(state):
+    if state["done"]:
+        return []
+    return ["wait", "finish-it", "explode"]
+
+
+def step(state, action):
+    state = dict(state)
+    if action == "wait":
+        state["ticks"] += 1
+        return state, 0, False, {"event": "wait"}
+    if action == "explode":
+        raise RuntimeError("kaboom")
+    if action == "finish-it":
+        state["done"] = True
+        state["phase"] = "finished"
+        state["score"] = 5
+        return state, 5, True, {"event": "finished"}
+    return state, -1, False, {"event": "blocked"}
+
+
+def observe(state):
+    # ticks is deliberately NOT observed: "wait" leaves observe() unchanged
+    return {"phase": state["phase"], "done": state["done"],
+            "score": state["score"]}
+'''
+
+STRAT_WAIT = 'def choose(observe, legal_actions):\n    return "wait"\n'
+STRAT_ILLEGAL = 'def choose(observe, legal_actions):\n    return "teleport"\n'
+STRAT_BOOM = ('def choose(observe, legal_actions):\n'
+              '    raise RuntimeError("strategy boom")\n')
+STRAT_EXPLODE = 'def choose(observe, legal_actions):\n    return "explode"\n'
+
+
+def _write(tmp, name, text):
+    path = os.path.join(tmp, name)
+    with open(path, "w") as fh:
+        fh.write(text)
+    return path
+
+
+def _autopilot(entry, cwd, args, env=None):
+    full = dict(os.environ)
+    if env:
+        full.update(env)
+    return subprocess.run([sys.executable, entry, "autopilot"] + args,
+                          cwd=cwd, env=full, capture_output=True, text=True,
+                          timeout=60)
+
+
+def t_autopilot_local(tmp):
+    out = os.path.join(tmp, "g")
+    r = run([CLIVANE, "game", os.path.join(HERE, "examples", "gemgrid_game.py"),
+             "--out", out])
+    assert r.returncode == 0, r.stderr
+    manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+    entry = os.path.join(out, manifest["entry"])
+    solution = _solve_gemgrid(7)
+    # greedy and bfs both solve seed 7 optimally and settle by replay
+    for strat in ("greedy", "bfs"):
+        r = _autopilot(entry, out, ["--strategy", strat, "--seed", "7", "--json"])
+        assert r.returncode == 0, (strat, r.stdout, r.stderr)
+        res = json.loads(r.stdout)
+        assert res["done"] is True and res["score"] == 30, res
+        assert res["steps"] == len(solution), res
+        assert res["stop_reason"] == "done" and res["verified"] is True, res
+        # the transcript was persisted and replays clean
+        sess = clivane.read_json(os.path.join(out, "session.json"))
+        assert sess["actions"] == solution, sess
+        r = run([entry, "replay", "--seed", "7",
+                 "--actions", ",".join(solution), "--json"], cwd=out)
+        assert r.returncode == 0, r.stdout
+    # random baseline: seeded -> two runs byte-identical, sane stop
+    runs = []
+    for _ in (1, 2):
+        r = _autopilot(entry, out, ["--strategy", "random", "--seed", "7"])
+        assert r.returncode == 0, r.stderr
+        runs.append(r.stdout)
+    assert runs[0] == runs[1], "seeded random autopilot diverged"
+    res = json.loads(runs[0])
+    assert res["stop_reason"] == "done" and res["steps"] <= 40, res
+    assert res["verified"] is True, res  # replay settles even a loss
+    # target score stops early, nothing settled
+    r = _autopilot(entry, out, ["--strategy", "greedy", "--seed", "7",
+                                "--target-score", "10"])
+    res = json.loads(r.stdout)
+    assert res["stop_reason"] == "target_reached", res
+    assert res["done"] is False and res["score"] >= 10, res
+    assert res["verified"] is False and res["steps"] < len(solution), res
+    # hard step budget: stops exactly at the budget, transcript saved
+    r = _autopilot(entry, out, ["--strategy", "greedy", "--seed", "7",
+                                "--max-steps", "3"])
+    res = json.loads(r.stdout)
+    assert res["stop_reason"] == "step_budget" and res["steps"] == 3, res
+    sess = clivane.read_json(os.path.join(out, "session.json"))
+    assert len(sess["actions"]) == 3 and sess["done"] is False, sess
+    # hard time budget (negative budget trips on the first check)
+    r = _autopilot(entry, out, ["--strategy", "greedy", "--seed", "7",
+                                "--max-seconds", "-1"])
+    res = json.loads(r.stdout)
+    assert res["stop_reason"] == "time_budget" and res["steps"] == 0, res
+    # dry-run: full projection, zero persistence
+    os.remove(os.path.join(out, "session.json"))
+    r = _autopilot(entry, out, ["--strategy", "greedy", "--seed", "7",
+                                "--dry-run"])
+    res = json.loads(r.stdout)
+    assert res["done"] is True and res["score"] == 30, res
+    assert res["dry_run"] is True and res["verified"] is False, res
+    assert not os.path.exists(os.path.join(out, "session.json"))
+
+
+def t_autopilot_abuse(tmp):
+    mod = _write(tmp, "wait_game.py", WAIT_GAME)
+    out = os.path.join(tmp, "w")
+    r = run([CLIVANE, "game", mod, "--out", out])
+    assert r.returncode == 0, r.stderr
+    manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+    entry = os.path.join(out, manifest["entry"])
+    # stall: "wait" never changes observe() -> stopped after 5 repeats
+    sf = _write(tmp, "strat_wait.py", STRAT_WAIT)
+    r = _autopilot(entry, out, ["--strategy-file", sf, "--seed", "1"])
+    res = json.loads(r.stdout)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert res["stop_reason"] == "stall" and res["steps"] == 5, res
+    # illegal action: never forwarded to the game, aborts at step 0
+    sf = _write(tmp, "strat_illegal.py", STRAT_ILLEGAL)
+    r = _autopilot(entry, out, ["--strategy-file", sf, "--seed", "1"])
+    res = json.loads(r.stdout)
+    assert r.returncode == 1, (r.returncode, r.stdout)
+    assert res["stop_reason"] == "illegal_action" and res["steps"] == 0, res
+    sess = clivane.read_json(os.path.join(out, "session.json"))
+    assert sess["actions"] == [] and sess["state"]["ticks"] == 0, sess
+    # strategy exception: safe abort, partial transcript persisted
+    sf = _write(tmp, "strat_boom.py", STRAT_BOOM)
+    r = _autopilot(entry, out, ["--strategy-file", sf, "--seed", "1"])
+    res = json.loads(r.stdout)
+    assert r.returncode == 1, (r.returncode, r.stdout)
+    assert res["stop_reason"] == "error" and "strategy boom" in res["error"], res
+    sess = clivane.read_json(os.path.join(out, "session.json"))
+    assert sess["actions"] == [], sess
+    # step() exception: contained the same way, state not corrupted
+    sf = _write(tmp, "strat_explode.py", STRAT_EXPLODE)
+    r = _autopilot(entry, out, ["--strategy-file", sf, "--seed", "1"])
+    res = json.loads(r.stdout)
+    assert r.returncode == 1, (r.returncode, r.stdout)
+    assert res["stop_reason"] == "error" and "kaboom" in res["error"], res
+    sess = clivane.read_json(os.path.join(out, "session.json"))
+    assert sess["actions"] == [] and sess["done"] is False, sess
+    # the package is still fully usable after all that abuse
+    r = run([entry, "new", "--seed", "1", "--json"], cwd=out)
+    assert r.returncode == 0, r.stderr
+
+
+def t_autopilot_arena(tmp):
+    out = os.path.join(tmp, "arena")
+    r = run([CLIVANE, "game", os.path.join(HERE, "examples", "gemgrid_game.py"),
+             "--fullstack", "--out", out])
+    assert r.returncode == 0, r.stderr
+    manifest = clivane.read_json(os.path.join(out, "manifest.json"))
+    entry = os.path.join(out, manifest["entry"])
+    port = clivane.free_port()
+    base = "http://127.0.0.1:%d" % port
+    env = {"CLIVANE_REMOTE": base}
+    proc = _start_server(out, port, server_file="game_server.py")
+    try:
+        # greedy + bfs bots finish seed 7 and are settled by server replay
+        for strat in ("greedy", "bfs"):
+            r = _autopilot(entry, out, ["--strategy", strat, "--seed", "7"],
+                           env=env)
+            assert r.returncode == 0, (strat, r.stdout, r.stderr)
+            res = json.loads(r.stdout)
+            assert res["done"] is True and res["score"] == 30, res
+            assert res["stop_reason"] == "done" and res["verified"] is True, res
+        status, board = clivane.http_json("GET", base + "/leaderboard")
+        players = {s["player"]: s for s in board["scores"]}
+        assert set(players) == {"autopilot-greedy", "autopilot-bfs"}, players
+        for s in players.values():
+            assert s["score"] == 30 and s["verified"] is True, s
+        # dry-run: no session created, leaderboard untouched
+        status, before = clivane.http_json("GET", base + "/sessions")
+        r = _autopilot(entry, out, ["--strategy", "greedy", "--seed", "7",
+                                    "--dry-run"], env=env)
+        res = json.loads(r.stdout)
+        assert res["done"] is True and res["dry_run"] is True, res
+        assert res["verified"] is False, res
+        status, after = clivane.http_json("GET", base + "/sessions")
+        assert len(after["sessions"]) == len(before["sessions"]), after
+        status, board2 = clivane.http_json("GET", base + "/leaderboard")
+        assert len(board2["scores"]) == 2, board2
+        # server-side step budget: a rogue client is aborted at the cap
+        status, rogue = clivane.http_json(
+            "POST", base + "/sessions",
+            {"seed": 7, "player": "rogue", "max_steps": 2})
+        assert status == 201 and rogue["max_steps"] == 2, (status, rogue)
+        sid = rogue["id"]
+        for _ in (1, 2):
+            status, _resp = clivane.http_json(
+                "POST", base + "/sessions/%s/act" % sid, {"action": "down"})
+            assert status == 200, status
+        status, err = clivane.http_json(
+            "POST", base + "/sessions/%s/act" % sid, {"action": "down"})
+        assert status == 403 and "budget" in err["error"], (status, err)
+        status, view = clivane.http_json("GET", base + "/sessions/" + sid)
+        assert view["aborted"] is True, view
+        status, err = clivane.http_json(
+            "POST", base + "/sessions/%s/act" % sid, {"action": "down"})
+        assert status == 403, (status, err)  # stays aborted
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    # rate limit: 20 acts/second per session, the 21st burst act is 429
+    mod = _write(tmp, "wait_game.py", WAIT_GAME)
+    wout = os.path.join(tmp, "warena")
+    r = run([CLIVANE, "game", mod, "--fullstack", "--out", wout])
+    assert r.returncode == 0, r.stderr
+    port = clivane.free_port()
+    base = "http://127.0.0.1:%d" % port
+    proc = _start_server(wout, port, server_file="game_server.py")
+    try:
+        status, sess = clivane.http_json("POST", base + "/sessions",
+                                         {"seed": 1, "player": "bursty"})
+        assert status == 201, (status, sess)
+        statuses = []
+        for _ in range(25):
+            status, _resp = clivane.http_json(
+                "POST", base + "/sessions/%s/act" % sess["id"],
+                {"action": "wait"})
+            statuses.append(status)
+        assert statuses[:20] == [200] * 20, statuses
+        assert 429 in statuses[20:], statuses
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
 def t_examples_registry(tmp):
     registry = clivane.read_json(os.path.join(HERE, "examples", "registry.json"))
     pkgs = registry["packages"]
@@ -609,6 +852,9 @@ def main():
         ("serve: live server health/run/client/probe/token", t_serve_live),
         ("game fullstack: arena package shape + determinism", t_game_fullstack_generate),
         ("game fullstack: live arena UI/sessions/verify/leaderboard", t_game_fullstack_live),
+        ("autopilot: local strategies, budgets, target, dry-run", t_autopilot_local),
+        ("autopilot: abuse - stall/illegal/strategy+step exceptions", t_autopilot_abuse),
+        ("autopilot: arena bots + server budget abort + rate limit", t_autopilot_arena),
         ("examples: registry holds 6 Gold packages", t_examples_registry),
     ]
     with tempfile.TemporaryDirectory(prefix="clivane-test-") as tmp:
